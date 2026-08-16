@@ -140,6 +140,12 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     SHORT_PWRBTN_COUNT
   };
 
+  enum POWER_BUTTON_WAKE {
+    WAKE_LONG_PRESS = 0,
+    WAKE_SHORT_PRESS = 1,
+    POWER_BUTTON_WAKE_COUNT
+  };
+
   enum SHORT_HOME_PRESS {
     HOME_GO_HOME = 0,
     HOME_BACK = 1,
@@ -225,6 +231,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t textAntiAliasing = 1;
   // Short power button click behaviour
   uint8_t shortPwrBtn = IGNORE;
+  // Power-button hold required to accept a deep-sleep wake.
+  uint8_t powerButtonWake = WAKE_LONG_PRESS;
   // EPUB reading orientation settings
   // 0 = portrait (default), 1 = landscape clockwise, 2 = inverted, 3 = landscape counter-clockwise
   uint8_t orientation = PORTRAIT;
@@ -321,6 +329,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   static constexpr uint8_t MIN_SLEEP_TIMEOUT_MINUTES = 1;
   static constexpr uint8_t SLEEP_TIMEOUT_NEVER_MINUTES = 31;
   static constexpr uint8_t MAX_SLEEP_TIMEOUT_MINUTES = SLEEP_TIMEOUT_NEVER_MINUTES;
+  static constexpr uint16_t POWER_BUTTON_LONG_PRESS_MS = 400;
+  static constexpr uint16_t POWER_BUTTON_SHORT_PRESS_MS = 10;
 
   // Callback to resolve SD card font IDs. Set by SdCardFontSystem::begin().
   // Returns font ID or 0 if not found.
@@ -329,7 +339,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   void* sdFontResolverCtx = nullptr;
 
   uint16_t getPowerButtonDuration() const {
-    return (shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP) ? 10 : 400;
+    return (shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP) ? POWER_BUTTON_SHORT_PRESS_MS
+                                                                   : POWER_BUTTON_LONG_PRESS_MS;
   }
   int getReaderFontId() const;
 

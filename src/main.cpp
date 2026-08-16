@@ -440,8 +440,9 @@ void setup() {
   switch (wakeupReason) {
     case HalGPIO::WakeupReason::PowerButton:
       LOG_DBG("MAIN", "Verifying power button press duration");
-      if (!gpio.verifyPowerButtonWakeup(SETTINGS.getPowerButtonDuration(),
-                                        SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP)) {
+      if (!gpio.verifyPowerButtonWakeup(
+              CrossPointSettings::POWER_BUTTON_LONG_PRESS_MS,
+              SETTINGS.powerButtonWake == CrossPointSettings::POWER_BUTTON_WAKE::WAKE_SHORT_PRESS)) {
         powerManager.startDeepSleep(gpio);
       }
       wakePowerReleasePending = true;
