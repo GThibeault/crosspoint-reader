@@ -1703,6 +1703,15 @@ void EpubReaderActivity::navigateBackFromLink() {
   requestUpdate();
 }
 
+bool EpubReaderActivity::handleHomeGesture() {
+  if (SETTINGS.shortHomePress != CrossPointSettings::SHORT_HOME_PRESS::HOME_BACK || linkHistoryDepth <= 0) {
+    return false;
+  }
+  automaticPageTurnActive = false;
+  navigateBackFromLink();
+  return true;
+}
+
 void EpubReaderActivity::loadCachedBookmarks() {
   cachedBookmarks.clear();
   if (cachedBookmarks.capacity() < initialBookmarkCacheCapacity) {

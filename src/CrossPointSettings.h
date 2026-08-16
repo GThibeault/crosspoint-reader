@@ -140,6 +140,12 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     SHORT_PWRBTN_COUNT
   };
 
+  enum SHORT_HOME_PRESS {
+    HOME_GO_HOME = 0,
+    HOME_BACK = 1,
+    SHORT_HOME_PRESS_COUNT
+  };
+
   // Long-press Confirm action while reading an EPUB. The setting cycles through these values.
   // Persisted in settings.json by index: any new function (e.g. dictionary, bookmark) MUST use a
   // value >= 2 and be appended at the END of the enumValues array in SettingsList.h, otherwise the
@@ -272,6 +278,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t fadingFix = 0;
   // Power button return from followed links (1 = enabled, 0 = disabled)
   uint8_t pwrBtnFootnoteBack = 1;
+  // Short capacitive Home-key action. Only surfaced on boards with that key.
+  uint8_t shortHomePress = HOME_GO_HOME;
   // Use book's embedded CSS styles for EPUB rendering (1 = enabled, 0 = disabled)
   uint8_t embeddedStyle = 1;
   // Focus Reading - emphasizes the first part of words with bold

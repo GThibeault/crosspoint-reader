@@ -120,6 +120,7 @@ class EpubReaderActivity final : public ReaderActivity {
   ~EpubReaderActivity() override;
 
   void loop() override;
+  bool handleHomeGesture() override;
 
   bool pageTurn(bool isForward) override;
   bool skipPages(int amount) override;

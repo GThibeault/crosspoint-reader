@@ -306,6 +306,8 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
             "touchReaderControls", StrId::STR_CAT_CONTROLS),
         SettingInfo::Toggle(StrId::STR_TAP_FOR_READER_MENU, &CrossPointSettings::tapForReaderMenu, "tapForReaderMenu",
                             StrId::STR_CAT_CONTROLS),
+        SettingInfo::Enum(StrId::STR_SHORT_HOME_PRESS, &CrossPointSettings::shortHomePress,
+                          {StrId::STR_GO_HOME_BUTTON, StrId::STR_BACK}, "shortHomePress", StrId::STR_CAT_CONTROLS),
         SettingInfo::Toggle(StrId::STR_FRONT_BTN_FOLLOW_ORIENTATION, &CrossPointSettings::frontButtonFollowOrientation,
                             "frontButtonFollowOrientation", StrId::STR_CAT_CONTROLS),
         SettingInfo::Enum(StrId::STR_LONG_PRESS_BEHAVIOR, &CrossPointSettings::longPressButtonBehavior,
@@ -466,7 +468,10 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
   // primary path and stays on.
   if (!BoardConfig::hasHomeKey()) {
     v.erase(std::remove_if(v.begin(), v.end(),
-                           [](const SettingInfo& s) { return s.nameId == StrId::STR_TAP_FOR_READER_MENU; }),
+                           [](const SettingInfo& s) {
+                             return s.nameId == StrId::STR_TAP_FOR_READER_MENU ||
+                                    s.nameId == StrId::STR_SHORT_HOME_PRESS;
+                           }),
             v.end());
   }
   if (BoardConfig::hasTouch()) {
