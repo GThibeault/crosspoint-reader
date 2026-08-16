@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-#include "Epub/FootnoteEntry.h"
+#include "Epub/PageLink.h"
 #include "Epub/ParsedText.h"
 #include "Epub/blocks/ImageBlock.h"
 #include "Epub/blocks/TextBlock.h"
@@ -106,12 +106,20 @@ class ChapterHtmlSlimParser {
   bool syntheticCharacterData = false;
   uint16_t nonVisibleTextDepth = 0;
 
-  // Footnote link tracking
-  bool insideFootnoteLink = false;
-  int footnoteLinkDepth = -1;
-  FootnoteEntry currentFootnote = {};
-  int currentFootnoteLinkTextLen = 0;
-  std::vector<std::pair<int, FootnoteEntry>> pendingFootnotes;  // <wordIndex, entry>
+  // Internal EPUB link tracking
+  bool insideInternalLink = false;
+  int internalLinkDepth = -1;
+  PageLink currentLink = {};
+  int currentLinkTextLen = 0;
+  int currentLinkStartWordIndex = 0;
+  uint16_t activeLinkId = 0;
+  uint16_t nextLinkId = 1;
+  struct PendingPageLink {
+    int startWordIndex;
+    int endWordIndex;
+    PageLink link;
+  };
+  std::vector<PendingPageLink> pendingLinks;
   int wordsExtractedInBlock = 0;
 
   // Resumable parse state. The one-shot parseAndBuildPages() drives these

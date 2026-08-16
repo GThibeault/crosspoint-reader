@@ -69,7 +69,7 @@ void SettingsActivity::rebuildSettingsLists() {
       readerSettings.push_back(setting);
     } else if (setting.category == StrId::STR_CAT_CONTROLS) {
       if (setting.valuePtr == &CrossPointSettings::pwrBtnFootnoteBack &&
-          SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::FOOTNOTES) {
+          SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::LINKS) {
         continue;
       }
       controlsSettings.push_back(setting);

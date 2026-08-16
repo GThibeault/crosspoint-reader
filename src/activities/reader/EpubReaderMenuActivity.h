@@ -13,7 +13,7 @@ class EpubReaderMenuActivity final : public UiListActivity {
   // Menu actions available from the reader menu.
   enum class MenuAction {
     SELECT_CHAPTER,
-    FOOTNOTES,
+    LINKS,
     TEXT_SETTINGS,
     NIGHT_MODE,
     FRONTLIGHT,
@@ -32,7 +32,7 @@ class EpubReaderMenuActivity final : public UiListActivity {
 
   explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
                                   const int currentPage, const int totalPages, const int bookProgressPercent,
-                                  const uint8_t currentOrientation, const bool hasFootnotes, bool hasBookmarks);
+                                  const uint8_t currentOrientation, const bool hasLinks, bool hasBookmarks);
 
   void render(RenderLock&&) override;
   bool handleHomeGesture() override;
@@ -43,7 +43,7 @@ class EpubReaderMenuActivity final : public UiListActivity {
     StrId labelId;
   };
 
-  static std::vector<MenuItem> buildMenuItems(bool hasFootnotes, bool hasBookmarks);
+  static std::vector<MenuItem> buildMenuItems(bool hasLinks, bool hasBookmarks);
 
   // Row storage: menuItems is at most MAX_MENU_ITEMS, so a
   // fixed-capacity array avoids any heap allocation for the row list. Labels

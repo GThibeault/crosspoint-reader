@@ -1,7 +1,7 @@
 #pragma once
 
 #include <Epub.h>
-#include <Epub/FootnoteEntry.h>
+#include <Epub/PageLink.h>
 #include <Epub/Section.h>
 
 #include <atomic>
@@ -50,15 +50,16 @@ class EpubReaderActivity final : public ReaderActivity {
   unsigned long bookmarkMessageTime = 0UL;
   bool pendingReadFolderMove = false;
 
-  // Footnote support
-  std::vector<FootnoteEntry> currentPageFootnotes;
-  struct SavedPosition {
+  std::vector<PageLink> currentPageLinks;
+  PageLinkHitRegions currentPageLinkRegions[PageLink::MAX_PER_PAGE] = {};
+  uint8_t currentPageLinkRegionCount = 0;
+  struct NavigationPosition {
     int spineIndex;
     int pageNumber;
   };
-  static constexpr int MAX_FOOTNOTE_DEPTH = 3;
-  SavedPosition savedPositions[MAX_FOOTNOTE_DEPTH] = {};
-  int footnoteDepth = 0;
+  static constexpr int MAX_LINK_HISTORY_DEPTH = 8;
+  NavigationPosition linkHistory[MAX_LINK_HISTORY_DEPTH] = {};
+  int linkHistoryDepth = 0;
 
   uint16_t buildViewportWidth = 0;
   uint16_t buildViewportHeight = 0;
@@ -96,8 +97,9 @@ class EpubReaderActivity final : public ReaderActivity {
   void addBookmark();
   void updateBookmarkFlag();
 
-  void navigateToHref(const std::string& href, bool savePosition = false);
-  void restoreSavedPosition();
+  void navigateToHref(const std::string& href, bool pushHistory = false);
+  void navigateBackFromLink();
+  bool handleLinkTap();
 
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft);

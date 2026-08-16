@@ -273,7 +273,7 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
 
   // flush the buffer
   partWordBuffer[partWordBufferIndex] = '\0';
-  currentTextBlock->addWord(partWordBuffer, fontStyle, false, nextWordContinues, partWordVisibleOffset);
+  currentTextBlock->addWord(partWordBuffer, fontStyle, false, nextWordContinues, partWordVisibleOffset, activeLinkId);
   partWordBufferIndex = 0;
   nextWordContinues = false;
   listItemBulletOnly = false;
@@ -907,9 +907,8 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     }
   }
 
-  // Detect internal <a href="..."> links (footnotes, cross-references)
-  // Note: <aside epub:type="footnote"> elements are rendered as normal content
-  // without special handling. Links pointing to them are collected as footnotes.
+  // Track EPUB-local <a href="..."> links. Their targets may be footnotes,
+  // cross-references, or ordinary locations in the publication.
   if (strcmp(name, "a") == 0) {
     const char* href = getAttribute(atts, "href");
 
@@ -929,12 +928,20 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
         self->flushPartWordBuffer();
         self->nextWordContinues = true;
       }
-      self->insideFootnoteLink = true;
-      self->footnoteLinkDepth = self->depth;
-      strncpy(self->currentFootnote.href, href, sizeof(self->currentFootnote.href) - 1);
-      self->currentFootnote.href[sizeof(self->currentFootnote.href) - 1] = '\0';
-      self->currentFootnote.number[0] = '\0';
-      self->currentFootnoteLinkTextLen = 0;
+      self->insideInternalLink = true;
+      self->internalLinkDepth = self->depth;
+      self->activeLinkId = self->nextLinkId == UINT16_MAX ? 0 : self->nextLinkId++;
+      // Zero is reserved for ordinary text. If an adversarial chapter contains
+      // more than 65534 links, keep rendering/menu discovery but stop attaching
+      // hit metadata once the identifier space is exhausted.
+      strncpy(self->currentLink.href, href, sizeof(self->currentLink.href) - 1);
+      self->currentLink.href[sizeof(self->currentLink.href) - 1] = '\0';
+      self->currentLink.text[0] = '\0';
+      self->currentLink.id = self->activeLinkId;
+      self->currentLinkTextLen = 0;
+      self->currentLinkStartWordIndex =
+          self->wordsExtractedInBlock +
+          (self->currentTextBlock ? static_cast<int>(self->currentTextBlock->size()) : 0);
 
       // Apply underline style to visually indicate the link.
       StyleStackEntry entry;
@@ -1162,9 +1169,9 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
     return;
   }
 
-  // Collect footnote link display text (for the number label)
-  // Skip whitespace and brackets to normalize noterefs like "[1]" → "1"
-  if (self->insideFootnoteLink) {
+  // Collect link display text for the page-links picker.
+  // Trim surrounding whitespace without imposing footnote-specific syntax.
+  if (self->insideInternalLink) {
     int start = 0;
     int end = len - 1;
 
@@ -1172,22 +1179,19 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
     // "     [  12  ]   " => "12"
     // "   turn to 256  " => "turn to 256"
 
-    // Ignore leading whitespaces and left square brackets
-    while (start < len && (isWhitespace(s[start]) || (s[start] == '['))) {
+    while (start < len && isWhitespace(s[start])) {
       ++start;
     }
 
-    // Ignore trailing whitespaces and right square brackets
-    while (end >= start && (isWhitespace(s[end]) || (s[end] == ']'))) {
+    while (end >= start && isWhitespace(s[end])) {
       --end;
     }
 
-    // Extract footnote link text
-    for (int i = start; (self->currentFootnoteLinkTextLen < sizeof(self->currentFootnote.number) - 1) && (i <= end);
+    for (int i = start; (self->currentLinkTextLen < sizeof(self->currentLink.text) - 1) && (i <= end);
          ++i) {
-      self->currentFootnote.number[self->currentFootnoteLinkTextLen++] = s[i];
+      self->currentLink.text[self->currentLinkTextLen++] = s[i];
     }
-    self->currentFootnote.number[self->currentFootnoteLinkTextLen] = '\0';
+    self->currentLink.text[self->currentLinkTextLen] = '\0';
   }
 
   uint32_t nextCodepointOffset = callbackVisibleOffset;
@@ -1449,19 +1453,21 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
 
   self->depth -= 1;
 
-  // Closing a footnote link — create entry from collected text and href
-  if (self->insideFootnoteLink && self->depth == self->footnoteLinkDepth) {
-    if (self->currentFootnote.number[0] != '\0' && self->currentFootnote.href[0] != '\0') {
-      FootnoteEntry entry;
-      strncpy(entry.number, self->currentFootnote.number, sizeof(entry.number) - 1);
-      entry.number[sizeof(entry.number) - 1] = '\0';
-      strncpy(entry.href, self->currentFootnote.href, sizeof(entry.href) - 1);
+  // Closing an internal link creates an entry from its text and href.
+  if (self->insideInternalLink && self->depth == self->internalLinkDepth) {
+    if (self->currentLink.text[0] != '\0' && self->currentLink.href[0] != '\0') {
+      PageLink entry;
+      strncpy(entry.text, self->currentLink.text, sizeof(entry.text) - 1);
+      entry.text[sizeof(entry.text) - 1] = '\0';
+      strncpy(entry.href, self->currentLink.href, sizeof(entry.href) - 1);
       entry.href[sizeof(entry.href) - 1] = '\0';
-      int wordIndex =
+      entry.id = self->currentLink.id;
+      const int endWordIndex =
           self->wordsExtractedInBlock + (self->currentTextBlock ? static_cast<int>(self->currentTextBlock->size()) : 0);
-      self->pendingFootnotes.push_back({wordIndex, entry});
+      self->pendingLinks.push_back({self->currentLinkStartWordIndex, endWordIndex, entry});
     }
-    self->insideFootnoteLink = false;
+    self->insideInternalLink = false;
+    self->activeLinkId = 0;
   }
 
   // Leaving skip
@@ -1680,14 +1686,20 @@ void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line, const
   }
   setCurrentPageVisibleOffset(visibleOffset);
 
-  // Track cumulative words to assign footnotes to the page containing their anchor
-  wordsExtractedInBlock += line->wordCount();
-  auto footnoteIt = pendingFootnotes.begin();
-  while (footnoteIt != pendingFootnotes.end() && footnoteIt->first <= wordsExtractedInBlock) {
-    currentPage->addFootnote(footnoteIt->second.number, footnoteIt->second.href);
-    ++footnoteIt;
+  // Associate a link with every page containing part of its displayed text.
+  const int lineStartWord = wordsExtractedInBlock;
+  const int lineEndWord = lineStartWord + line->wordCount();
+  for (auto linkIt = pendingLinks.begin(); linkIt != pendingLinks.end(); ++linkIt) {
+    if (linkIt->startWordIndex < lineEndWord && linkIt->endWordIndex > lineStartWord) {
+      currentPage->addLink(linkIt->link.text, linkIt->link.href, linkIt->link.id);
+    }
   }
-  pendingFootnotes.erase(pendingFootnotes.begin(), footnoteIt);
+  auto firstIncompleteLink = pendingLinks.begin();
+  while (firstIncompleteLink != pendingLinks.end() && firstIncompleteLink->endWordIndex <= lineEndWord) {
+    ++firstIncompleteLink;
+  }
+  pendingLinks.erase(pendingLinks.begin(), firstIncompleteLink);
+  wordsExtractedInBlock = lineEndWord;
 
   // Apply horizontal left inset (margin + padding) as x position offset
   const int16_t xOffset = line->getBlockStyle().leftInset();
@@ -1727,14 +1739,12 @@ void ChapterHtmlSlimParser::makePages() {
       renderer, fontId, effectiveWidth,
       [this](const std::shared_ptr<TextBlock>& textBlock, const uint32_t offset) { addLineToPage(textBlock, offset); });
 
-  // Fallback: transfer any remaining pending footnotes to current page.
-  // Normally addLineToPage handles this via word-index tracking, but this catches
-  // edge cases where a footnote's word index equals the exact block size.
-  if (!pendingFootnotes.empty() && currentPage) {
-    for (const auto& [idx, fn] : pendingFootnotes) {
-      currentPage->addFootnote(fn.number, fn.href);
+  // Preserve links whose word index sits exactly at the block boundary.
+  if (!pendingLinks.empty() && currentPage) {
+    for (const auto& pending : pendingLinks) {
+      currentPage->addLink(pending.link.text, pending.link.href, pending.link.id);
     }
-    pendingFootnotes.clear();
+    pendingLinks.clear();
   }
 
   // Apply bottom spacing after the paragraph (stored in pixels)

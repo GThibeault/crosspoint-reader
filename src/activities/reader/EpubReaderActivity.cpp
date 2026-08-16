@@ -23,7 +23,7 @@
 #include "DictionaryWordSelectActivity.h"
 #include "EpubReaderBookmarksActivity.h"
 #include "EpubReaderChapterSelectionActivity.h"
-#include "EpubReaderFootnotesActivity.h"
+#include "EpubReaderLinksActivity.h"
 #include "EpubReaderPercentSelectionActivity.h"
 #include "EpubReaderUtils.h"
 #include "KOReaderCredentialStore.h"
@@ -141,8 +141,8 @@ void moveFinishedBookToReadFolder(const std::string& srcPath, const std::string&
 EpubReaderActivity::~EpubReaderActivity() {
   ImageBlock::setExtractor(nullptr, nullptr);
 
-  if (footnoteDepth > 0 && epub) {
-    const SavedPosition& origin = savedPositions[0];
+  if (linkHistoryDepth > 0 && epub) {
+    const NavigationPosition& origin = linkHistory[0];
     saveProgress(origin.spineIndex, origin.pageNumber, 0);
   }
 
@@ -239,7 +239,7 @@ void EpubReaderActivity::openReaderMenu() {
   const int bookProgressPercent = clampPercent(static_cast<int>(bookProgress + 0.5f));
   startActivityForResult(std::make_unique<EpubReaderMenuActivity>(
                              renderer, mappedInput, epub->getTitle(), currentPage, totalPages, bookProgressPercent,
-                             SETTINGS.orientation, !currentPageFootnotes.empty(), !cachedBookmarks.empty()),
+                             SETTINGS.orientation, !currentPageLinks.empty(), !cachedBookmarks.empty()),
                          [this](const ActivityResult& result) {
                            const auto& menu = std::get<MenuResult>(result.data);
                            if (SETTINGS.orientation != menu.orientation) {
@@ -366,6 +366,10 @@ void EpubReaderActivity::loop() {
     pendingReadFolderMove = false;
   }
 
+  if (handleLinkTap()) {
+    return;
+  }
+
   const auto touch = ReaderUtils::detectTouchPageTurn(renderer, mappedInput);
 
   if (automaticPageTurnActive) {
@@ -473,9 +477,9 @@ void EpubReaderActivity::loop() {
     openReaderMenu();
   }
 
-  if (footnoteDepth > 0 && mappedInput.wasReleased(MappedInputManager::Button::Back) &&
+  if (linkHistoryDepth > 0 && mappedInput.wasReleased(MappedInputManager::Button::Back) &&
       mappedInput.getHeldTime() < ReaderUtils::GO_BACK_OR_HOME_MS) {
-    restoreSavedPosition();
+    navigateBackFromLink();
     return;
   }
 
@@ -483,21 +487,21 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FOOTNOTES &&
+  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::LINKS &&
       mappedInput.wasReleased(MappedInputManager::Button::Power) &&
       !mappedInput.wasReleased(MappedInputManager::Button::Down)) {
-    if (footnoteDepth > 0) {
-      restoreSavedPosition();
+    if (linkHistoryDepth > 0) {
+      navigateBackFromLink();
     } else {
-      if (currentPageFootnotes.size() == 1) {
-        navigateToHref(currentPageFootnotes[0].href, true);
-      } else if (currentPageFootnotes.size() > 1) {
+      if (currentPageLinks.size() == 1) {
+        navigateToHref(currentPageLinks[0].href, true);
+      } else if (currentPageLinks.size() > 1) {
         startActivityForResult(
-            std::make_unique<EpubReaderFootnotesActivity>(renderer, mappedInput, currentPageFootnotes),
+            std::make_unique<EpubReaderLinksActivity>(renderer, mappedInput, currentPageLinks),
             [this](const ActivityResult& result) {
               if (!result.isCancelled) {
-                const auto& footnoteResult = std::get<FootnoteResult>(result.data);
-                navigateToHref(footnoteResult.href, true);
+                const auto& linkResult = std::get<LinkResult>(result.data);
+                navigateToHref(linkResult.href, true);
               }
               requestUpdate();
             });
@@ -692,15 +696,15 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
           });
       break;
     }
-    case EpubReaderMenuActivity::MenuAction::FOOTNOTES: {
-      startActivityForResult(std::make_unique<EpubReaderFootnotesActivity>(renderer, mappedInput, currentPageFootnotes),
+    case EpubReaderMenuActivity::MenuAction::LINKS: {
+      startActivityForResult(std::make_unique<EpubReaderLinksActivity>(renderer, mappedInput, currentPageLinks),
                              [this](const ActivityResult& result) {
                                if (result.isCancelled) {
                                  openReaderMenu();
                                  return;
                                }
-                               const auto& footnoteResult = std::get<FootnoteResult>(result.data);
-                               navigateToHref(footnoteResult.href, true);
+                               const auto& linkResult = std::get<LinkResult>(result.data);
+                               navigateToHref(linkResult.href, true);
                                requestUpdate();
                              });
       break;
@@ -1249,7 +1253,10 @@ void EpubReaderActivity::renderBook() {
     pageLoadRetryCount = 0;
 
     currentPageVisibleOffset = p->visibleTextOffset;
-    currentPageFootnotes = std::move(p->footnotes);
+    currentPageLinkRegionCount = p->buildLinkHitRects(
+        renderer, renderSpec.fontId, renderer.getLineHeight(renderSpec.fontId, renderSpec.lineCompression),
+        orientedMarginLeft, orientedMarginTop, currentPageLinkRegions, PageLink::MAX_PER_PAGE);
+    currentPageLinks = std::move(p->links);
 
     const auto start = millis();
     renderContents(std::move(p), orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
@@ -1596,14 +1603,8 @@ void EpubReaderActivity::renderStatusBar() const {
                     section ? section->isBuilding() : false);
 }
 
-void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool savePosition) {
+void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool pushHistory) {
   if (!epub) return;
-
-  if (savePosition && section && footnoteDepth < MAX_FOOTNOTE_DEPTH) {
-    savedPositions[footnoteDepth] = {currentSpineIndex, section->currentPage};
-    footnoteDepth++;
-    LOG_DBG("ERS", "Saved position [%d]: spine %d, page %d", footnoteDepth, currentSpineIndex, section->currentPage);
-  }
 
   std::string anchor;
   const auto hashPos = hrefStr.find('#');
@@ -1616,8 +1617,19 @@ void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool s
 
   if (targetSpineIndex < 0) {
     LOG_DBG("ERS", "Could not resolve href: %s", hrefStr.c_str());
-    if (savePosition && footnoteDepth > 0) footnoteDepth--;
     return;
+  }
+
+  if (pushHistory && section) {
+    if (linkHistoryDepth == MAX_LINK_HISTORY_DEPTH) {
+      for (int i = 1; i < MAX_LINK_HISTORY_DEPTH; i++) {
+        linkHistory[i - 1] = linkHistory[i];
+      }
+      linkHistoryDepth--;
+    }
+    linkHistory[linkHistoryDepth++] = {currentSpineIndex, section->currentPage};
+    LOG_DBG("ERS", "Saved link history [%d]: spine %d, page %d", linkHistoryDepth, currentSpineIndex,
+            section->currentPage);
   }
 
   {
@@ -1632,11 +1644,54 @@ void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool s
   LOG_DBG("ERS", "Navigated to spine %d for href: %s", targetSpineIndex, hrefStr.c_str());
 }
 
-void EpubReaderActivity::restoreSavedPosition() {
-  if (footnoteDepth <= 0) return;
-  footnoteDepth--;
-  const auto& pos = savedPositions[footnoteDepth];
-  LOG_DBG("ERS", "Restoring position [%d]: spine %d, page %d", footnoteDepth, pos.spineIndex, pos.pageNumber);
+bool EpubReaderActivity::handleLinkTap() {
+  if (!SETTINGS.touchReaderControls || !mappedInput.hasTouch() || !section || !epub || currentPageLinks.empty() ||
+      currentSpineIndex < 0 || currentSpineIndex >= epub->getSpineItemsCount()) {
+    return false;
+  }
+
+  int x = 0;
+  int y = 0;
+  if (!mappedInput.wasScreenTapped(x, y)) return false;
+
+  static constexpr int MIN_LINK_TOUCH_SIZE = 28;
+  uint8_t selectedLinkIndex = UINT8_MAX;
+  uint32_t bestDistanceSquared = UINT32_MAX;
+
+  for (uint8_t regionIndex = 0; regionIndex < currentPageLinkRegionCount; regionIndex++) {
+    const auto& region = currentPageLinkRegions[regionIndex];
+    for (uint8_t i = 0; i < region.rectCount; i++) {
+      const auto& rect = region.rects[i];
+      const int expandX = std::max(0, (MIN_LINK_TOUCH_SIZE - rect.width + 1) / 2);
+      const int expandY = std::max(0, (MIN_LINK_TOUCH_SIZE - rect.height + 1) / 2);
+      const int left = rect.x - expandX;
+      const int top = rect.y - expandY;
+      const int right = rect.x + rect.width + expandX;
+      const int bottom = rect.y + rect.height + expandY;
+      if (x < left || x >= right || y < top || y >= bottom) continue;
+
+      const int dx = x < rect.x ? rect.x - x : (x >= rect.x + rect.width ? x - (rect.x + rect.width - 1) : 0);
+      const int dy = y < rect.y ? rect.y - y : (y >= rect.y + rect.height ? y - (rect.y + rect.height - 1) : 0);
+      const uint32_t distanceSquared = static_cast<uint32_t>(dx * dx + dy * dy);
+      if (selectedLinkIndex == UINT8_MAX || distanceSquared < bestDistanceSquared) {
+        selectedLinkIndex = region.linkIndex;
+        bestDistanceSquared = distanceSquared;
+      }
+    }
+  }
+
+  if (selectedLinkIndex >= currentPageLinks.size()) return false;
+  automaticPageTurnActive = false;
+  navigateToHref(currentPageLinks[selectedLinkIndex].href, true);
+  return true;
+}
+
+void EpubReaderActivity::navigateBackFromLink() {
+  if (linkHistoryDepth <= 0) return;
+  linkHistoryDepth--;
+  const auto& pos = linkHistory[linkHistoryDepth];
+  LOG_DBG("ERS", "Restoring link history [%d]: spine %d, page %d", linkHistoryDepth, pos.spineIndex,
+          pos.pageNumber);
 
   {
     RenderLock lock;

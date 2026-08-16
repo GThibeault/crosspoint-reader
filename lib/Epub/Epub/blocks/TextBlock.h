@@ -22,6 +22,7 @@
 //   uint16_t textOff[wordCount]        byte offset of word i's text in text[]
 //   int16_t  xpos[wordCount]
 //   uint16_t focusSuffixX[wordCount]   present only when focusPresent
+//   uint16_t linkId[wordCount]         present only when linksPresent
 //   uint8_t  styles[wordCount]
 //   uint8_t  focusBoundary[wordCount]  present only when focusPresent
 //   char     text[textBytes]           all words back to back, NUL-terminated
@@ -42,6 +43,7 @@ class TextBlock final : public Block {
   uint16_t numWords = 0;
   uint16_t textBytes = 0;  // total size of the text region, including NULs
   bool focusPresent = false;
+  bool linksPresent = false;
   bool isValid = true;
   // The ONLY allocation: makeUniqueNoThrow, so OOM yields an invalid block
   // instead of abort() (bare new is not nothrow with -fno-exceptions).
@@ -51,13 +53,14 @@ class TextBlock final : public Block {
   const uint16_t* textOffArr = nullptr;
   const int16_t* xposArr = nullptr;
   const uint16_t* focusSuffixXArr = nullptr;  // null when !focusPresent
+  const uint16_t* linkIdArr = nullptr;        // null when !linksPresent
   const uint8_t* stylesArr = nullptr;
   const uint8_t* focusBoundaryArr = nullptr;  // null when !focusPresent
   const char* textArr = nullptr;
   std::vector<std::string> rubyTexts;
 
   TextBlock() = default;  // deserialize() fills the fields directly
-  static size_t arenaSize(uint16_t wordCount, bool hasFocus, uint16_t textBytes);
+  static size_t arenaSize(uint16_t wordCount, bool hasFocus, bool hasLinks, uint16_t textBytes);
   void bindArenaPointers();
 
  public:
@@ -66,8 +69,8 @@ class TextBlock final : public Block {
   // is false -- callers must check and fail the line instead of using it.
   explicit TextBlock(const std::vector<std::string>& words, const std::vector<int16_t>& wordXpos,
                      const std::vector<EpdFontFamily::Style>& wordStyles, const std::vector<uint8_t>& focusBoundary,
-                     const std::vector<uint16_t>& focusSuffixX, const BlockStyle& blockStyle = BlockStyle(),
-                     std::vector<std::string> rubyTexts = {});
+                     const std::vector<uint16_t>& focusSuffixX, const std::vector<uint16_t>& linkIds,
+                     const BlockStyle& blockStyle = BlockStyle(), std::vector<std::string> rubyTexts = {});
   ~TextBlock() override = default;
   TextBlock(const TextBlock&) = delete;
   TextBlock& operator=(const TextBlock&) = delete;
@@ -87,6 +90,8 @@ class TextBlock final : public Block {
   EpdFontFamily::Style wordStyle(const uint16_t i) const { return static_cast<EpdFontFamily::Style>(stylesArr[i]); }
   uint8_t focusBoundary(const uint16_t i) const { return focusPresent ? focusBoundaryArr[i] : 0; }
   uint16_t focusSuffixX(const uint16_t i) const { return focusPresent ? focusSuffixXArr[i] : 0; }
+  uint16_t linkId(const uint16_t i) const { return linksPresent ? linkIdArr[i] : 0; }
+  int renderedWordAdvance(const GfxRenderer& renderer, int fontId, uint16_t i) const;
   bool hasRuby() const;
   int getRubyShift(int ascender) const { return hasRuby() ? (ascender / 2) : 0; }
   const std::vector<std::string>& getRubyTexts() const { return rubyTexts; }

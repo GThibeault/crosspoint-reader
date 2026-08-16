@@ -14,9 +14,9 @@ namespace fui = freeink::ui;
 EpubReaderMenuActivity::EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                                const std::string& title, const int currentPage, const int totalPages,
                                                const int bookProgressPercent, const uint8_t currentOrientation,
-                                               const bool hasFootnotes, const bool hasBookmarks)
+                                               const bool hasLinks, const bool hasBookmarks)
     : UiListActivity("EpubReaderMenu", renderer, mappedInput),
-      menuItems(buildMenuItems(hasFootnotes, hasBookmarks)),
+      menuItems(buildMenuItems(hasLinks, hasBookmarks)),
       title(title),
       pendingOrientation(currentOrientation),
       currentPage(currentPage),
@@ -37,13 +37,13 @@ void EpubReaderMenuActivity::buildMenuRowItems() {
   }
 }
 
-std::vector<EpubReaderMenuActivity::MenuItem> EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes,
+std::vector<EpubReaderMenuActivity::MenuItem> EpubReaderMenuActivity::buildMenuItems(bool hasLinks,
                                                                                      bool hasBookmarks) {
   std::vector<MenuItem> items;
   items.reserve(MAX_MENU_ITEMS);
   items.push_back({MenuAction::SELECT_CHAPTER, StrId::STR_SELECT_CHAPTER});
-  if (hasFootnotes) {
-    items.push_back({MenuAction::FOOTNOTES, StrId::STR_FOOTNOTES});
+  if (hasLinks) {
+    items.push_back({MenuAction::LINKS, StrId::STR_LINKS});
   }
   if (hasBookmarks) {
     items.push_back({MenuAction::BOOKMARKS, StrId::STR_BOOKMARKS});

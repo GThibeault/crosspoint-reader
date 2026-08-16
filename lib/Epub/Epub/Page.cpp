@@ -140,6 +140,58 @@ void Page::renderWithImagePlaceholders(GfxRenderer& renderer, const int fontId, 
   }
 }
 
+uint8_t Page::buildLinkHitRects(const GfxRenderer& renderer, const int fontId, const int lineHeight, const int xOffset,
+                                const int yOffset, PageLinkHitRegions* regions, const uint8_t regionCapacity) const {
+  const uint8_t regionCount = static_cast<uint8_t>(std::min<size_t>(links.size(), regionCapacity));
+  for (uint8_t i = 0; i < regionCount; i++) {
+    regions[i].linkIndex = i;
+    regions[i].rectCount = 0;
+  }
+
+  const auto findRegion = [this, regions, regionCount](const uint16_t linkId) -> PageLinkHitRegions* {
+    for (uint8_t i = 0; i < regionCount; i++) {
+      if (links[regions[i].linkIndex].id == linkId) return &regions[i];
+    }
+    return nullptr;
+  };
+
+  for (const auto& element : elements) {
+    if (element->getTag() != TAG_PageLine) continue;
+    const auto& line = static_cast<const PageLine&>(*element);
+    const auto& block = line.getBlock();
+    const uint16_t wordCount = block->wordCount();
+
+    uint16_t i = 0;
+    while (i < wordCount) {
+      const uint16_t linkId = block->linkId(i);
+      if (linkId == 0) {
+        i++;
+        continue;
+      }
+
+      const int left = block->wordXpos(i);
+      int right = left + block->renderedWordAdvance(renderer, fontId, i);
+      uint16_t next = i + 1;
+      while (next < wordCount && block->linkId(next) == linkId) {
+        right = std::max(right,
+                         static_cast<int>(block->wordXpos(next)) + block->renderedWordAdvance(renderer, fontId, next));
+        next++;
+      }
+
+      auto* region = findRegion(linkId);
+      if (region && right > left && region->rectCount < PageLinkHitRegions::MAX_RECTS) {
+        auto& rect = region->rects[region->rectCount++];
+        rect.x = static_cast<int16_t>(xOffset + line.xPos + left);
+        rect.y = static_cast<int16_t>(yOffset + line.yPos);
+        rect.width = static_cast<int16_t>(right - left);
+        rect.height = static_cast<int16_t>(std::max(1, lineHeight));
+      }
+      i = next;
+    }
+  }
+  return regionCount;
+}
+
 bool Page::serialize(HalFile& file) const {
   const uint16_t count = elements.size();
   serialization::writePod(file, count);
@@ -153,14 +205,14 @@ bool Page::serialize(HalFile& file) const {
     }
   }
 
-  // Serialize footnotes (clamp to MAX_FOOTNOTES_PER_PAGE to match addFootnote/deserialize limits)
-  const uint16_t fnCount = std::min<uint16_t>(footnotes.size(), MAX_FOOTNOTES_PER_PAGE);
-  serialization::writePod(file, fnCount);
-  for (uint16_t i = 0; i < fnCount; i++) {
-    const auto& fn = footnotes[i];
-    if (file.write(fn.number, sizeof(fn.number)) != sizeof(fn.number) ||
-        file.write(fn.href, sizeof(fn.href)) != sizeof(fn.href)) {
-      LOG_ERR("PGE", "Failed to write footnote");
+  const uint16_t linkCount = std::min<uint16_t>(links.size(), MAX_LINKS_PER_PAGE);
+  serialization::writePod(file, linkCount);
+  for (uint16_t i = 0; i < linkCount; i++) {
+    const auto& link = links[i];
+    serialization::writePod(file, link.id);
+    if (file.write(link.text, sizeof(link.text)) != sizeof(link.text) ||
+        file.write(link.href, sizeof(link.href)) != sizeof(link.href)) {
+      LOG_ERR("PGE", "Failed to write page link");
       return false;
     }
   }
@@ -212,22 +264,22 @@ std::unique_ptr<Page> Page::deserialize(HalFile& file) {
     }
   }
 
-  // Deserialize footnotes
-  uint16_t fnCount;
-  serialization::readPod(file, fnCount);
-  if (fnCount > MAX_FOOTNOTES_PER_PAGE) {
-    LOG_ERR("PGE", "Invalid footnote count %u", fnCount);
+  uint16_t linkCount;
+  serialization::readPod(file, linkCount);
+  if (linkCount > MAX_LINKS_PER_PAGE) {
+    LOG_ERR("PGE", "Invalid page link count %u", linkCount);
     return nullptr;
   }
-  page->footnotes.resize(fnCount);
-  for (uint16_t i = 0; i < fnCount; i++) {
-    auto& entry = page->footnotes[i];
-    if (file.read(entry.number, sizeof(entry.number)) != sizeof(entry.number) ||
+  page->links.resize(linkCount);
+  for (uint16_t i = 0; i < linkCount; i++) {
+    auto& entry = page->links[i];
+    serialization::readPod(file, entry.id);
+    if (file.read(entry.text, sizeof(entry.text)) != sizeof(entry.text) ||
         file.read(entry.href, sizeof(entry.href)) != sizeof(entry.href)) {
-      LOG_ERR("PGE", "Failed to read footnote %u", i);
+      LOG_ERR("PGE", "Failed to read page link %u", i);
       return nullptr;
     }
-    entry.number[sizeof(entry.number) - 1] = '\0';
+    entry.text[sizeof(entry.text) - 1] = '\0';
     entry.href[sizeof(entry.href) - 1] = '\0';
   }
 
