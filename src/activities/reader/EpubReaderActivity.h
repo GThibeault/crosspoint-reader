@@ -58,6 +58,8 @@ class EpubReaderActivity final : public ReaderActivity {
     int pageNumber;
   };
   static constexpr int MAX_LINK_HISTORY_DEPTH = 8;
+  static constexpr int MIN_LINK_TOUCH_SIZE = 44;
+  static constexpr int LINK_TOUCH_PADDING = 6;
   NavigationPosition linkHistory[MAX_LINK_HISTORY_DEPTH] = {};
   int linkHistoryDepth = 0;
 

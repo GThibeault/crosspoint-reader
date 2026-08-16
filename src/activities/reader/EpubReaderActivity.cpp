@@ -1654,7 +1654,6 @@ bool EpubReaderActivity::handleLinkTap() {
   int y = 0;
   if (!mappedInput.wasScreenTapped(x, y)) return false;
 
-  static constexpr int MIN_LINK_TOUCH_SIZE = 28;
   uint8_t selectedLinkIndex = UINT8_MAX;
   uint32_t bestDistanceSquared = UINT32_MAX;
 
@@ -1662,8 +1661,8 @@ bool EpubReaderActivity::handleLinkTap() {
     const auto& region = currentPageLinkRegions[regionIndex];
     for (uint8_t i = 0; i < region.rectCount; i++) {
       const auto& rect = region.rects[i];
-      const int expandX = std::max(0, (MIN_LINK_TOUCH_SIZE - rect.width + 1) / 2);
-      const int expandY = std::max(0, (MIN_LINK_TOUCH_SIZE - rect.height + 1) / 2);
+      const int expandX = std::max(LINK_TOUCH_PADDING, (MIN_LINK_TOUCH_SIZE - rect.width + 1) / 2);
+      const int expandY = std::max(LINK_TOUCH_PADDING, (MIN_LINK_TOUCH_SIZE - rect.height + 1) / 2);
       const int left = rect.x - expandX;
       const int top = rect.y - expandY;
       const int right = rect.x + rect.width + expandX;
