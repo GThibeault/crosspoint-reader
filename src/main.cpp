@@ -285,7 +285,8 @@ void enterDeepSleep(bool fromTimeout = false) {
   display.deepSleep();
   LOG_DBG("MAIN", "Entering deep sleep");
 
-  powerManager.startDeepSleep(gpio);
+  powerManager.startDeepSleep(
+      gpio, SETTINGS.powerButtonWake == CrossPointSettings::POWER_BUTTON_WAKE::WAKE_SHORT_PRESS);
 }
 
 void setupDisplayAndFonts(bool seamless = false) {
@@ -443,7 +444,8 @@ void setup() {
       if (!gpio.verifyPowerButtonWakeup(
               CrossPointSettings::POWER_BUTTON_LONG_PRESS_MS,
               SETTINGS.powerButtonWake == CrossPointSettings::POWER_BUTTON_WAKE::WAKE_SHORT_PRESS)) {
-        powerManager.startDeepSleep(gpio);
+        powerManager.startDeepSleep(
+            gpio, SETTINGS.powerButtonWake == CrossPointSettings::POWER_BUTTON_WAKE::WAKE_SHORT_PRESS);
       }
       wakePowerReleasePending = true;
       break;
@@ -455,7 +457,8 @@ void setup() {
       // Sleeping here would strand the device in a USB-replug boot loop.
       break;
 #else
-      powerManager.startDeepSleep(gpio);
+      powerManager.startDeepSleep(
+          gpio, SETTINGS.powerButtonWake == CrossPointSettings::POWER_BUTTON_WAKE::WAKE_SHORT_PRESS);
       break;
 #endif
     case HalGPIO::WakeupReason::AfterFlash:

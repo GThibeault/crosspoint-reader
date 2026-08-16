@@ -70,9 +70,10 @@ class HalPowerManager {
   // Control CPU frequency for power saving
   void setPowerSaving(bool enabled);
 
-  // Setup wake up GPIO and enter deep sleep
+  // Setup wake up GPIO and enter deep sleep. keepRtcPeriphOn trades additional
+  // sleep current for reliable short-pulse EXT1 wakeups.
   // Should be called inside main loop() to handle the currentLockMode
-  void startDeepSleep(HalGPIO& gpio) const;
+  void startDeepSleep(HalGPIO& gpio, bool keepRtcPeriphOn) const;
 
   // Light-sleep the CPU for LIGHT_SLEEP_SLICE_MS (timer wake; buttons are polled on
   // wake at the same cadence as the delay() this replaces). Returns false WITHOUT
