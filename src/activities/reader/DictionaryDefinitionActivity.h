@@ -34,11 +34,15 @@ class DictionaryDefinitionActivity final : public ReaderActivity {
 
   // Usable body-text area between the header and the button hints.
   struct BodyArea {
+    int x;
+    int y;
     int width;
     int height;
   };
 
   BodyArea bodyArea() const;
+  bool findWordAt(int x, int y, const char*& word, uint32_t& terminatorOffset) const;
+  bool openLookupAt(int x, int y);
   bool layoutHtmlPages();
   void wrapText();
   int measureSpan(int fontId, const char* text, size_t len) const;
@@ -48,6 +52,7 @@ class DictionaryDefinitionActivity final : public ReaderActivity {
   bool pageTurn(bool isForward) override;
   bool skipPages(int amount) override;
   bool isAtEndOfBook() const override { return false; }
+  bool performReaderAction(ReaderAction action, int x, int y) override;
   void renderBook() override;
 
   const std::string headword;

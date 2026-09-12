@@ -41,6 +41,11 @@ void indexBuildYield(void*) { vTaskDelay(1); }
 
 void DictionaryWordSelectActivity::onEnter() {
   Activity::onEnter();
+  if (directWord) {
+    performLookup();
+    return;
+  }
+
   fontId = SETTINGS.getReaderFontId();
   lineHeight = renderer.getLineHeight(fontId);
   extractWords();
@@ -162,6 +167,12 @@ void DictionaryWordSelectActivity::moveVertical(const int direction) {
 }
 
 void DictionaryWordSelectActivity::performLookup() {
+  const char* lookupWord = directWord;
+  if (!lookupWord) {
+    if (selected < 0 || selected >= static_cast<int>(words.size())) return;
+    lookupWord = words[selected].text;
+  }
+
   popup = Popup::Busy;
   if (!dictOpenAttempted) {
     dictOpenAttempted = true;
@@ -184,7 +195,7 @@ void DictionaryWordSelectActivity::performLookup() {
   std::string definition;
   std::string headword;
   Dictionary::LookupResult result = Dictionary::LookupResult::NotFound;
-  const bool found = ok && dict.lookup(words[selected].text, definition, headword, &result);
+  const bool found = ok && dict.lookup(lookupWord, definition, headword, &result);
 
   if (found) {
     popup = Popup::None;

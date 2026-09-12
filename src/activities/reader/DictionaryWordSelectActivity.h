@@ -25,6 +25,17 @@ class DictionaryWordSelectActivity final : public Activity {
         initialTouchX(initialTouchX),
         initialTouchY(initialTouchY) {}
 
+  // Direct lookup from a stacked definition page. The word remains owned by
+  // that parent activity, which stays alive until this activity finishes.
+  explicit DictionaryWordSelectActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                                        const char* directWord)
+      : Activity("DictionaryWordSelect", renderer, mappedInput),
+        marginLeft(0),
+        marginTop(0),
+        initialTouchX(-1),
+        initialTouchY(-1),
+        directWord(directWord) {}
+
   void onEnter() override;
   void loop() override;
   void render(RenderLock&&) override;
@@ -51,7 +62,7 @@ class DictionaryWordSelectActivity final : public Activity {
   int wordAt(int x, int y) const;
   void moveVertical(int direction);
   void performLookup();
-  bool isDirectLookup() const { return initialTouchX >= 0 && initialTouchY >= 0; }
+  bool isDirectLookup() const { return directWord != nullptr || (initialTouchX >= 0 && initialTouchY >= 0); }
   bool drawHighlightWithSnapshot();
   void drawHints() const;
 
@@ -60,6 +71,7 @@ class DictionaryWordSelectActivity final : public Activity {
   const int marginTop;
   const int initialTouchX;
   const int initialTouchY;
+  const char* directWord = nullptr;
   int fontId = 0;
   int lineHeight = 0;
 

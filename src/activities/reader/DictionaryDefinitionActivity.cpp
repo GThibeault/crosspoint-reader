@@ -3,12 +3,15 @@
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <Logging.h>
+#include <Memory.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
 
 #include "CrossPointSettings.h"
+#include "DictionaryWordSelectActivity.h"
 #include "ReaderUtils.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -52,14 +55,22 @@ void DictionaryDefinitionActivity::onExit() { Activity::onExit(); }
 DictionaryDefinitionActivity::BodyArea DictionaryDefinitionActivity::bodyArea() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto orientation = renderer.getOrientation();
-  const bool isLandscape = orientation == GfxRenderer::Orientation::LandscapeClockwise ||
-                           orientation == GfxRenderer::Orientation::LandscapeCounterClockwise;
+  const bool isLandscapeCw = orientation == GfxRenderer::Orientation::LandscapeClockwise;
+  const bool isLandscape = isLandscapeCw || orientation == GfxRenderer::Orientation::LandscapeCounterClockwise;
   const bool isInverted = orientation == GfxRenderer::Orientation::PortraitInverted;
   const int hintGutterWidth = isLandscape ? metrics.sideButtonHintsWidth : 0;
-  const int topArea = (isInverted ? metrics.buttonHintsHeight : 0) + metrics.topPadding + metrics.headerHeight;
+  const int contentX = isLandscapeCw ? hintGutterWidth : 0;
+  const int contentY = isInverted ? metrics.buttonHintsHeight : 0;
+  const int bodyY = contentY + metrics.topPadding + metrics.headerHeight;
+  const int topArea = bodyY;
   const int bottomArea = metrics.buttonHintsHeight + metrics.verticalSpacing;
-  return {renderer.getScreenWidth() - hintGutterWidth - 2 * SIDE_PADDING,
+  return {contentX + SIDE_PADDING, bodyY, renderer.getScreenWidth() - hintGutterWidth - 2 * SIDE_PADDING,
           renderer.getScreenHeight() - topArea - bottomArea};
+}
+
+bool DictionaryDefinitionActivity::performReaderAction(const ReaderAction action, const int x, const int y) {
+  if (action != ReaderAction::LookupAtPoint) return false;
+  return openLookupAt(x, y);
 }
 
 // Styled path: lay the HTML definition out through the EPUB chapter parser
@@ -76,6 +87,96 @@ bool DictionaryDefinitionActivity::layoutHtmlPages() {
   definition.shrink_to_fit();
   totalPages = static_cast<int>(pages.size());
   currentPage = 0;
+  return true;
+}
+
+bool DictionaryDefinitionActivity::findWordAt(const int x, const int y, const char*& word,
+                                              uint32_t& terminatorOffset) const {
+  constexpr int TOUCH_SLOP = 4;
+  word = nullptr;
+  terminatorOffset = UINT32_MAX;
+
+  const BodyArea body = bodyArea();
+  const int fontId = SETTINGS.getReaderFontId();
+  const int lineHeight = renderer.getLineHeight(fontId);
+
+  if (!pages.empty()) {
+    const int ascender = renderer.getFontAscenderSize(fontId);
+    for (const auto& element : pages[currentPage]->elements) {
+      if (element->getTag() != TAG_PageLine) continue;
+      const auto* line = static_cast<const PageLine*>(element.get());
+      const auto& block = line->getBlock();
+      if (!block || !block->valid()) continue;
+
+      const int wordY = body.y + line->yPos + block->getRubyShift(ascender);
+      if (y < wordY - TOUCH_SLOP || y >= wordY + lineHeight + TOUCH_SLOP) continue;
+      for (uint16_t i = 0; i < block->wordCount(); i++) {
+        const int wordX = body.x + line->xPos + block->wordXpos(i);
+        const int wordWidth = block->renderedWordAdvance(renderer, fontId, i);
+        if (x >= wordX - TOUCH_SLOP && x < wordX + wordWidth + TOUCH_SLOP) {
+          word = block->wordText(i);
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  const int firstLine = currentPage * linesPerPage;
+  const int lastLine = std::min(firstLine + linesPerPage, static_cast<int>(lines.size()));
+  for (int lineIndex = firstLine; lineIndex < lastLine; lineIndex++) {
+    const int lineY = body.y + (lineIndex - firstLine) * lineHeight;
+    if (y < lineY - TOUCH_SLOP || y >= lineY + lineHeight + TOUCH_SLOP) continue;
+
+    const Line& line = lines[lineIndex];
+    const uint32_t lineEnd = line.start + line.len;
+    uint32_t cursor = line.start;
+    while (cursor < lineEnd) {
+      while (cursor < lineEnd && (definition[cursor] == ' ' || definition[cursor] == '\t' ||
+                                  definition[cursor] == '\r' || definition[cursor] == '\n')) {
+        cursor++;
+      }
+      const uint32_t tokenStart = cursor;
+      while (cursor < lineEnd && definition[cursor] != ' ' && definition[cursor] != '\t' &&
+             definition[cursor] != '\r' && definition[cursor] != '\n') {
+        cursor++;
+      }
+      if (tokenStart == cursor) continue;
+
+      const int wordX = body.x + measureSpan(fontId, definition.c_str() + line.start, tokenStart - line.start);
+      const int wordWidth = measureSpan(fontId, definition.c_str() + tokenStart, cursor - tokenStart);
+      if (x >= wordX - TOUCH_SLOP && x < wordX + wordWidth + TOUCH_SLOP) {
+        word = definition.c_str() + tokenStart;
+        terminatorOffset = cursor;
+        return true;
+      }
+    }
+    return false;
+  }
+  return false;
+}
+
+bool DictionaryDefinitionActivity::openLookupAt(const int x, const int y) {
+  const char* word = nullptr;
+  uint32_t terminatorOffset = UINT32_MAX;
+  if (!findWordAt(x, y, word, terminatorOffset)) return false;
+
+  char savedTerminator = '\0';
+  if (terminatorOffset < definition.size()) {
+    savedTerminator = definition[terminatorOffset];
+    definition[terminatorOffset] = '\0';
+  }
+
+  auto lookupActivity = makeUniqueNoThrow<DictionaryWordSelectActivity>(renderer, mappedInput, word);
+  if (!lookupActivity) {
+    if (terminatorOffset < definition.size()) definition[terminatorOffset] = savedTerminator;
+    LOG_ERR("DICT", "OOM: nested dictionary lookup activity");
+    return true;
+  }
+
+  startActivityForResult(std::move(lookupActivity), [this, terminatorOffset, savedTerminator](const ActivityResult&) {
+    if (terminatorOffset < definition.size()) definition[terminatorOffset] = savedTerminator;
+  });
   return true;
 }
 
@@ -255,12 +356,12 @@ void DictionaryDefinitionActivity::renderBook() {
   // renderContents) so SD-card font glyphs load from SD in one batch instead
   // of one on-demand overflow read per character on every page turn.
   const int fontId = SETTINGS.getReaderFontId();
-  const int bodyStartY = contentY + metrics.topPadding + metrics.headerHeight;
+  const BodyArea body = bodyArea();
   auto* fcm = renderer.getFontCacheManager();
   auto scope = fcm->createPrewarmScope();
-  drawBody(fontId, contentX + SIDE_PADDING, bodyStartY);  // scan pass: records codepoints only
+  drawBody(fontId, body.x, body.y);  // scan pass: records codepoints only
   scope.endScanAndPrewarm();
-  drawBody(fontId, contentX + SIDE_PADDING, bodyStartY);
+  drawBody(fontId, body.x, body.y);
 
   const auto labels =
       mappedInput.mapLabels(tr(STR_BACK), "", (currentPage > 0 ? "<" : ""), (currentPage + 1 < totalPages ? ">" : ""));
