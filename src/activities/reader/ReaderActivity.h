@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
@@ -13,19 +14,23 @@ class ReaderActivity : public Activity {
   std::string bookPath;
   int pagesUntilFullRefresh = 0;
   bool forcedRefreshPending = false;
+  bool returnToPreviousOnBack = false;
+  unsigned long lastPageTurnTime = 0UL;
+  unsigned long pageTurnDuration = 0UL;
+  int8_t pendingManualTurn = 0;
+  bool automaticPageTurnActive = false;
 
   std::unique_ptr<EndOfBookOptions> endOfBookOptions;
   std::atomic<bool> endOfBookOptionsReady{false};
 
   explicit ReaderActivity(const char* name, GfxRenderer& renderer, MappedInputManager& mappedInput,
-                          std::string bookPath, bool allowFastInitialRefresh);
+                          std::string bookPath, bool allowFastInitialRefresh, bool returnToPreviousOnBack = false);
 
   virtual bool loadBook() = 0;
   virtual std::string getBookTitle() const = 0;
   virtual std::string getBookAuthor() const { return ""; }
   virtual std::string getBookThumbBmpPath() const { return ""; }
 
-  virtual bool handleFormatInput() { return false; }
   virtual bool pageTurn(bool isForward) = 0;
   virtual bool skipPages(int amount) { return pageTurn(amount > 0); }
   virtual bool isAtEndOfBook() const = 0;
@@ -34,9 +39,20 @@ class ReaderActivity : public Activity {
   virtual void renderBook() = 0;
   virtual void applyInitialOrientation();
   virtual void onEndOfBookRendered() {}
+  virtual bool updateReaderState() { return false; }
 
-  virtual bool handleBackNavigation();
-  virtual bool handleReaderHomeBack() { return false; }
+  enum class ReaderAction {
+    ActivateAtPoint, LookupAtPoint, ToggleBookmark, Sync, OpenDictionary, OpenMenu, OpenLinks
+  };
+  virtual bool performReaderAction(ReaderAction action, int x = -1, int y = -1) {
+    return false;
+  }
+  virtual bool navigateBackWithinContent() { return false; }
+  virtual bool canTurnReaderPage() const { return true; }
+  virtual int longPressSkipAmount() const { return 10; }
+  virtual bool applyReaderOrientation(uint8_t orientation) { return false; }
+
+  bool handleBackNavigation(bool backReleased, unsigned long heldMs);
   bool handleEndOfBookMenu(bool suppressConfirmRelease = false);
   bool handleEndOfBookPageTurn(bool prevTriggered, bool nextTriggered);
   void clearEndOfBookOptionsIfNeeded();
@@ -50,7 +66,7 @@ class ReaderActivity : public Activity {
 
   void onEnter() override;
   void onExit() override;
-  void loop() override;
+  void loop() final;
   void render(RenderLock&& lock) override;
   bool handleHomeGesture() final;
 

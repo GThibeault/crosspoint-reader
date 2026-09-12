@@ -292,10 +292,10 @@ void EpubReaderActivity::openDictionaryWordSelect(const int initialTouchX, const
   startActivityForResult(std::move(wordSelectActivity), [this](const ActivityResult&) { requestUpdate(); });
 }
 
-void EpubReaderActivity::loop() {
+bool EpubReaderActivity::updateReaderState() {
   if (!epub) {
     finish();
-    return;
+    return true;
   }
 
   constexpr unsigned long IDLE_PREWARM_DEBOUNCE_MS = 400;
@@ -353,7 +353,6 @@ void EpubReaderActivity::loop() {
   }
 
   const bool atEndOfBook = currentSpineIndex > 0 && currentSpineIndex >= epub->getSpineItemsCount();
-  clearEndOfBookOptionsIfNeeded();
 
   if (SETTINGS.removeReadBooksFromRecents) {
     if (atEndOfBook && !recentsEntryRemoved) {
@@ -370,47 +369,6 @@ void EpubReaderActivity::loop() {
     pendingReadFolderMove = false;
   }
 
-  int dictionaryTouchX = 0;
-  int dictionaryTouchY = 0;
-  if (!atEndOfBook && SETTINGS.touchReaderControls &&
-      mappedInput.wasScreenLongPress(dictionaryTouchX, dictionaryTouchY)) {
-    automaticPageTurnActive = false;
-    openDictionaryWordSelect(dictionaryTouchX, dictionaryTouchY);
-    return;
-  }
-
-  if (handleLinkTap()) {
-    return;
-  }
-
-  const auto touch = ReaderUtils::detectTouchPageTurn(renderer, mappedInput);
-
-  if (automaticPageTurnActive) {
-    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
-        mappedInput.wasReleased(MappedInputManager::Button::Back) ||
-        ReaderUtils::isTouchMenuGesture(renderer, mappedInput)) {
-      automaticPageTurnActive = false;
-      requestUpdate();
-      return;
-    }
-
-    if (!section) {
-      requestUpdate();
-      return;
-    }
-
-    if (RenderLock::peek()) {
-      lastPageTurnTime = millis();
-      return;
-    }
-
-    if ((millis() - lastPageTurnTime) >= pageTurnDuration) {
-      pageTurn(true);
-      requestUpdate();
-      return;
-    }
-  }
-
   if (showBookmarkMessage && (millis() - bookmarkMessageTime) >= ReaderUtils::BOOKMARK_MESSAGE_DURATION_MS) {
     showBookmarkMessage = false;
     requestUpdate();
@@ -420,172 +378,63 @@ void EpubReaderActivity::loop() {
     showDictionaryMessage = false;
     requestUpdate();
   }
+  return false;
+}
 
-  const bool confirmReleased = mappedInput.wasReleased(MappedInputManager::Button::Confirm);
-  if (confirmReleased) {
-    switch (SETTINGS.longPressMenuFunction) {
-      case CrossPointSettings::LP_MENU_BOOKMARK:
-        if (mappedInput.getHeldTime() >= ReaderUtils::BOOKMARK_HOLD_MS) {
-          addBookmark();
-          showBookmarkMessage = true;
-          bookmarkMessageTime = millis();
-          requestUpdate();
-          return;
-        }
-        break;
-      case CrossPointSettings::LP_MENU_KOSYNC:
-        if (mappedInput.getHeldTime() >= ReaderUtils::GO_HOME_MS && launchKOReaderSync()) return;
-        break;
-      case CrossPointSettings::LP_MENU_DICTIONARY:
-        if (mappedInput.getHeldTime() >= ReaderUtils::BOOKMARK_HOLD_MS) {
-          openDictionaryWordSelect();
-          return;
-        }
-        break;
-      case CrossPointSettings::LP_MENU_READER_MENU:
-        // Confirm already opens the menu on release. This option exists for
-        // boards whose capacitive Home key supplies the long-press action.
-        break;
-      case CrossPointSettings::LP_MENU_DISABLED:
-      default:
-        break;
-    }
-  }
-
-  // Home-key boards have no front Confirm button, so a Home-key hold runs the
-  // same user-selected long-press action. The SDK emits this event once per
-  // hold and suppresses the short Home tap for the same contact.
-  if (mappedInput.wasHomeKeyHold()) {
-    switch (SETTINGS.longPressMenuFunction) {
-      case CrossPointSettings::LP_MENU_BOOKMARK:
-        if (!showBookmarkMessage) {
-          addBookmark();
-          showBookmarkMessage = true;
-          bookmarkMessageTime = millis();
-          requestUpdate();
-        }
-        return;
-      case CrossPointSettings::LP_MENU_KOSYNC:
-        launchKOReaderSync();
-        return;
-      case CrossPointSettings::LP_MENU_DICTIONARY:
-        if (!showDictionaryMessage) {
-          openDictionaryWordSelect();
-        }
-        return;
-      case CrossPointSettings::LP_MENU_READER_MENU:
-        openReaderMenu();
-        return;
-      case CrossPointSettings::LP_MENU_DISABLED:
-      default:
-        break;
-    }
-  }
-
-  if (handleEndOfBookMenu()) {
-    return;
-  }
-
-  if (confirmReleased || ReaderUtils::isTouchMenuGesture(renderer, mappedInput)) {
-    openReaderMenu();
-  }
-
-  if (linkHistoryDepth > 0 && mappedInput.wasReleased(MappedInputManager::Button::Back) &&
-      mappedInput.getHeldTime() < ReaderUtils::GO_BACK_OR_HOME_MS) {
-    navigateBackFromLink();
-    return;
-  }
-
-  if (handleBackNavigation()) {
-    return;
-  }
-
-  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::LINKS &&
-      mappedInput.wasReleased(MappedInputManager::Button::Power) &&
-      !mappedInput.wasReleased(MappedInputManager::Button::Down)) {
-    if (linkHistoryDepth > 0) {
-      navigateBackFromLink();
-    } else {
-      if (currentPageLinks.size() == 1) {
+bool EpubReaderActivity::performReaderAction(const ReaderAction action, const int x, const int y) {
+  switch (action) {
+    case ReaderAction::LookupAtPoint:
+      if (isAtEndOfBook()) return false;
+      automaticPageTurnActive = false;
+      openDictionaryWordSelect(x, y);
+      return true;
+    case ReaderAction::ActivateAtPoint:
+      return handleLinkTap(x, y);
+    case ReaderAction::ToggleBookmark:
+      if (!showBookmarkMessage) {
+        addBookmark();
+        showBookmarkMessage = true;
+        bookmarkMessageTime = millis();
+        requestUpdate();
+      }
+      return true;
+    case ReaderAction::Sync:
+      launchKOReaderSync();
+      return true;
+    case ReaderAction::OpenDictionary:
+      if (!showDictionaryMessage) openDictionaryWordSelect();
+      return true;
+    case ReaderAction::OpenMenu:
+      openReaderMenu();
+      return true;
+    case ReaderAction::OpenLinks:
+      if (linkHistoryDepth > 0) {
+        navigateBackFromLink();
+      } else if (currentPageLinks.size() == 1) {
         navigateToHref(currentPageLinks[0].href, true);
       } else if (currentPageLinks.size() > 1) {
-        startActivityForResult(std::make_unique<EpubReaderLinksActivity>(renderer, mappedInput, currentPageLinks),
-                               [this](const ActivityResult& result) {
-                                 if (!result.isCancelled) {
-                                   const auto& linkResult = std::get<LinkResult>(result.data);
-                                   navigateToHref(linkResult.href, true);
-                                 }
-                                 requestUpdate();
-                               });
+        auto linksActivity =
+            makeUniqueNoThrow<EpubReaderLinksActivity>(renderer, mappedInput, currentPageLinks);
+        if (!linksActivity) {
+          LOG_ERR("ERS", "OOM: EPUB links activity");
+          return true;
+        }
+        startActivityForResult(std::move(linksActivity), [this](const ActivityResult& result) {
+          if (!result.isCancelled) {
+            const auto& linkResult = std::get<LinkResult>(result.data);
+            navigateToHref(linkResult.href, true);
+          }
+          requestUpdate();
+        });
       }
-    }
-    return;
+      return true;
   }
+  return false;
+}
 
-  constexpr unsigned long kMinManualTurnGapMs = 200;
-  const bool turnGuardActive = RenderLock::peek() || (millis() - lastPageTurnTime) < kMinManualTurnGapMs;
-  if (pendingManualTurn != 0 && !turnGuardActive) {
-    if (!section) {
-      pendingManualTurn = 0;
-      return;
-    }
-    const bool forward = pendingManualTurn > 0;
-    pendingManualTurn = 0;
-    pageTurn(forward);
-    requestUpdate();
-    return;
-  }
-
-  auto [prevTriggered, nextTriggered, fromTilt] = ReaderUtils::detectPageTurn(mappedInput);
-  prevTriggered = prevTriggered || touch.prev;
-  nextTriggered = nextTriggered || touch.next;
-  if (!prevTriggered && !nextTriggered) {
-    return;
-  }
-
-  if (handleEndOfBookPageTurn(prevTriggered, nextTriggered)) {
-    return;
-  }
-
-  const unsigned long heldMs = (touch.prev || touch.next) ? touch.heldMs : mappedInput.getHeldTime();
-  const bool longPress = !fromTilt && heldMs > ReaderUtils::SKIP_HOLD_MS;
-
-  if (mappedInput.wasReleased(MappedInputManager::Button::Power) &&
-      mappedInput.wasReleased(MappedInputManager::Button::Down)) {
-    return;
-  }
-
-  if (longPress && SETTINGS.longPressButtonBehavior == SETTINGS.CHAPTER_SKIP) {
-    skipPages(nextTriggered ? 1 : -1);
-    requestUpdate();
-    return;
-  }
-
-  if (longPress && SETTINGS.longPressButtonBehavior == SETTINGS.ORIENTATION_CHANGE) {
-    const uint8_t newOrientation =
-        nextTriggered ? (SETTINGS.orientation - 1 + SETTINGS.ORIENTATION_COUNT) % SETTINGS.ORIENTATION_COUNT
-                      : (SETTINGS.orientation + 1) % SETTINGS.ORIENTATION_COUNT;
-    applyOrientation(newOrientation);
-    requestUpdate();
-    return;
-  }
-
-  if (!section) {
-    requestUpdate();
-    return;
-  }
-
-  if (turnGuardActive) {
-    pendingManualTurn = prevTriggered ? -1 : 1;
-    return;
-  }
-
-  if (prevTriggered) {
-    pageTurn(false);
-  } else {
-    pageTurn(true);
-  }
-  requestUpdate();
+bool EpubReaderActivity::applyReaderOrientation(const uint8_t orientation) {
+  applyOrientation(orientation);
+  return true;
 }
 
 void EpubReaderActivity::jumpToPercent(int percent) {
@@ -1656,15 +1505,11 @@ void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool p
   LOG_DBG("ERS", "Navigated to spine %d for href: %s", targetSpineIndex, hrefStr.c_str());
 }
 
-bool EpubReaderActivity::handleLinkTap() {
-  if (!SETTINGS.touchReaderControls || !mappedInput.hasTouch() || !section || !epub || currentPageLinks.empty() ||
-      currentSpineIndex < 0 || currentSpineIndex >= epub->getSpineItemsCount()) {
+bool EpubReaderActivity::handleLinkTap(const int x, const int y) {
+  if (!section || !epub || currentPageLinks.empty() || currentSpineIndex < 0 ||
+      currentSpineIndex >= epub->getSpineItemsCount()) {
     return false;
   }
-
-  int x = 0;
-  int y = 0;
-  if (!mappedInput.wasScreenTapped(x, y)) return false;
 
   uint8_t selectedLinkIndex = UINT8_MAX;
   uint32_t bestDistanceSquared = UINT32_MAX;
@@ -1713,7 +1558,7 @@ void EpubReaderActivity::navigateBackFromLink() {
   requestUpdate();
 }
 
-bool EpubReaderActivity::handleReaderHomeBack() {
+bool EpubReaderActivity::navigateBackWithinContent() {
   if (linkHistoryDepth <= 0) return false;
   automaticPageTurnActive = false;
   navigateBackFromLink();

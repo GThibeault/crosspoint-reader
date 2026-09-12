@@ -44,18 +44,10 @@ void XtcReaderActivity::openChapterSelection() {
   }
 }
 
-bool XtcReaderActivity::handleFormatInput() {
-  if (!xtc) {
-    return false;
-  }
-
-  // Enter chapter selection activity on Confirm release or touch menu gesture
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
-      ReaderUtils::isTouchMenuGesture(renderer, mappedInput)) {
-    openChapterSelection();
-    return true;
-  }
-  return false;
+bool XtcReaderActivity::performReaderAction(const ReaderAction action, const int, const int) {
+  if (action != ReaderAction::OpenMenu || !xtc) return false;
+  openChapterSelection();
+  return true;
 }
 
 void XtcReaderActivity::applyInitialOrientation() { renderer.setOrientation(GfxRenderer::Orientation::Portrait); }

@@ -17,7 +17,7 @@ class DictionaryDefinitionActivity final : public ReaderActivity {
  public:
   explicit DictionaryDefinitionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string headword,
                                         std::string definition, bool htmlDefinition = false)
-      : ReaderActivity("DictionaryDefinition", renderer, mappedInput, "", false),
+      : ReaderActivity("DictionaryDefinition", renderer, mappedInput, "", false, true),
         headword(std::move(headword)),
         definition(std::move(definition)),
         htmlDefinition(htmlDefinition) {}
@@ -45,8 +45,6 @@ class DictionaryDefinitionActivity final : public ReaderActivity {
   void drawBody(int fontId, int x, int startY) const;
   bool loadBook() override { return true; }
   std::string getBookTitle() const override { return headword; }
-  bool handleBackNavigation() override;
-  bool handleReaderHomeBack() override;
   bool pageTurn(bool isForward) override;
   bool skipPages(int amount) override;
   bool isAtEndOfBook() const override { return false; }

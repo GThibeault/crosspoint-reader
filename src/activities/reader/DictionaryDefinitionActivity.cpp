@@ -195,17 +195,6 @@ void DictionaryDefinitionActivity::wrapText() {
   currentPage = 0;
 }
 
-bool DictionaryDefinitionActivity::handleBackNavigation() {
-  if (!mappedInput.wasReleased(MappedInputManager::Button::Back)) return false;
-  finish();
-  return true;
-}
-
-bool DictionaryDefinitionActivity::handleReaderHomeBack() {
-  finish();
-  return true;
-}
-
 bool DictionaryDefinitionActivity::pageTurn(const bool isForward) {
   return skipPages(isForward ? 1 : -1);
 }

@@ -26,9 +26,6 @@ class EpubReaderActivity final : public ReaderActivity {
   std::optional<uint32_t> cachedVisibleTextOffset;
   std::optional<uint32_t> currentPageVisibleOffset;
   std::optional<uint32_t> pendingOffsetJump;
-  unsigned long lastPageTurnTime = 0UL;
-  unsigned long pageTurnDuration = 0UL;
-  int8_t pendingManualTurn = 0;
   bool pendingPercentJump = false;
   float pendingSpineProgress = 0.0f;
   bool pendingScreenshot = false;
@@ -36,7 +33,6 @@ class EpubReaderActivity final : public ReaderActivity {
   uint8_t pageLoadRetryCount = 0;
   static constexpr uint8_t MAX_PAGE_LOAD_RETRIES = 3;
   bool skipNextButtonCheck = false;
-  bool automaticPageTurnActive = false;
   bool showBookmarkMessage = false;
   bool showDictionaryMessage = false;
   unsigned long dictionaryMessageTime = 0UL;
@@ -101,7 +97,7 @@ class EpubReaderActivity final : public ReaderActivity {
 
   void navigateToHref(const std::string& href, bool pushHistory = false);
   void navigateBackFromLink();
-  bool handleLinkTap();
+  bool handleLinkTap(int x, int y);
 
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft);
@@ -114,15 +110,18 @@ class EpubReaderActivity final : public ReaderActivity {
   std::string getBookThumbBmpPath() const override { return epub ? epub->getThumbBmpPath() : ""; }
   void renderBook() override;
   void onEndOfBookRendered() override;
+  bool updateReaderState() override;
+  bool performReaderAction(ReaderAction action, int x, int y) override;
+  bool navigateBackWithinContent() override;
+  bool canTurnReaderPage() const override { return section != nullptr; }
+  int longPressSkipAmount() const override { return 1; }
+  bool applyReaderOrientation(uint8_t orientation) override;
 
  public:
   explicit EpubReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string bookPath,
                               bool allowFastInitialRefresh)
       : ReaderActivity("EpubReader", renderer, mappedInput, std::move(bookPath), allowFastInitialRefresh) {}
   ~EpubReaderActivity() override;
-
-  void loop() override;
-  bool handleReaderHomeBack() override;
 
   bool pageTurn(bool isForward) override;
   bool skipPages(int amount) override;
