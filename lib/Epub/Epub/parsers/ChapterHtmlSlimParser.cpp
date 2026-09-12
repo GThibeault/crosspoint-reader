@@ -960,8 +960,11 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     // Preserve alt text without allocating an image framebuffer in the row.
     const char* alt = getAttribute(atts, "alt");
     if (alt && alt[0] != '\0') {
+      char inlineGlyph[5];
+      const int inlineGlyphLength = encodeUnicodeImageAlt(alt, inlineGlyph);
       self->syntheticCharacterData = true;
-      self->characterData(userData, alt, strlen(alt));
+      self->characterData(userData, inlineGlyphLength > 0 ? inlineGlyph : alt,
+                          inlineGlyphLength > 0 ? inlineGlyphLength : static_cast<int>(strlen(alt)));
       self->syntheticCharacterData = false;
     }
     self->skipUntilDepth = self->depth;

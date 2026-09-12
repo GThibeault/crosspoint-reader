@@ -241,7 +241,7 @@ const EpdGlyph* EpdFont::getGlyph(const uint32_t cp) const {
   }
 
   // U+02BF is the standard transliteration mark for ayin. Compact built-in
-  // reader fonts omit it, so use the visually equivalent raised left quote.
+  // reader fonts omit it, so use the closest available raised left mark.
   if (cp == MODIFIER_LETTER_LEFT_HALF_RING) {
     return getGlyph(LEFT_SINGLE_QUOTATION_MARK);
   }
