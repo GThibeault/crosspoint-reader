@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <utility>
 
 #include "StringUtils.h"
 
@@ -16,16 +17,16 @@ namespace {
 // see FileBrowserActivity's showHiddenFiles check).
 constexpr const char* DICT_ROOTS[] = {"/dictionaries", "/.dictionaries"};
 
-// Find the single .idx stem inside one dictionary folder. Returns false when
-// the folder holds no .idx or more than one distinct stem (ambiguous).
-bool findStem(const char* folderPath, std::string& stemOut) {
+// Collect every .idx that has matching definition data. The caller reuses the
+// vector across folders so discovery does not repeatedly allocate temporary
+// containers.
+bool findBasePaths(const char* folderPath, std::vector<std::string>& basePathsOut) {
+  basePathsOut.clear();
   auto dir = Storage.open(folderPath);
   if (!dir || !dir.isDirectory()) return false;
 
   dir.rewindDirectory();
   char name[128];
-  char foundStem[128];
-  foundStem[0] = '\0';
   for (auto entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
     entry.getName(name, sizeof(name));
     // Skip macOS metadata files (AppleDouble resource forks)
@@ -35,26 +36,18 @@ bool findStem(const char* folderPath, std::string& stemOut) {
     if (len <= 4 || strcmp(name + len - 4, ".idx") != 0) continue;
 
     name[len - 4] = '\0';
-    if (foundStem[0] != '\0' && strcmp(foundStem, name) != 0) {
-      LOG_DBG("DREG", "Skipping %s: multiple index stems found", folderPath);
-      return false;
+    const std::string base = std::string(folderPath) + "/" + name;
+    if (!Storage.exists((base + ".dict").c_str()) && !Storage.exists((base + ".dict.dz").c_str())) {
+      LOG_DBG("DREG", "Skipping %s: no .dict or .dict.dz", base.c_str());
+      continue;
     }
-    strncpy(foundStem, name, sizeof(foundStem) - 1);
-    foundStem[sizeof(foundStem) - 1] = '\0';
+    basePathsOut.push_back(base);
   }
 
-  if (foundStem[0] == '\0') return false;
-
-  // Require dictionary data next to the index, so folders holding only an
-  // .idx never surface as selectable dictionaries that fail at lookup time.
-  const std::string base = std::string(folderPath) + "/" + foundStem;
-  if (!Storage.exists((base + ".dict").c_str()) && !Storage.exists((base + ".dict.dz").c_str())) {
-    LOG_DBG("DREG", "Skipping %s: no .dict or .dict.dz", folderPath);
-    return false;
-  }
-
-  stemOut = foundStem;
-  return true;
+  std::sort(basePathsOut.begin(), basePathsOut.end(), [](const std::string& a, const std::string& b) {
+    return StringUtils::asciiCaseCmp(a.c_str(), b.c_str()) < 0;
+  });
+  return !basePathsOut.empty();
 }
 
 }  // namespace
@@ -62,6 +55,8 @@ bool findStem(const char* folderPath, std::string& stemOut) {
 void discover(std::vector<DictionaryEntry>& out) {
   out.clear();
   out.reserve(8);
+  std::vector<std::string> basePaths;
+  basePaths.reserve(4);
 
   for (const char* dictRoot : DICT_ROOTS) {
     auto rootDir = Storage.open(dictRoot);
@@ -77,14 +72,12 @@ void discover(std::vector<DictionaryEntry>& out) {
       if (!entry.isDirectory() || name[0] == '.') continue;
 
       std::string folderPath = std::string(dictRoot) + "/" + name;
-      std::string stem;
-      if (!findStem(folderPath.c_str(), stem)) continue;
+      if (!findBasePaths(folderPath.c_str(), basePaths)) continue;
 
       DictionaryEntry e;
       e.name = name;
-      e.stem = std::move(stem);
       out.push_back(std::move(e));
-      LOG_DBG("DREG", "Found dictionary: %s", name);
+      LOG_DBG("DREG", "Found dictionary group: %s (%u sources)", name, static_cast<unsigned>(basePaths.size()));
     }
   }
 
@@ -94,7 +87,9 @@ void discover(std::vector<DictionaryEntry>& out) {
   });
 }
 
-bool resolveBasePath(const char* folderName, std::string& basePathOut) {
+bool resolveBasePaths(const char* folderName, std::vector<std::string>& basePathsOut) {
+  basePathsOut.clear();
+  if (basePathsOut.capacity() < 4) basePathsOut.reserve(4);
   if (!folderName || folderName[0] == '\0') return false;
   // folderName is persisted in the settings JSON: reject separators and dot
   // prefixes so a crafted value cannot escape the dictionary roots.
@@ -102,10 +97,7 @@ bool resolveBasePath(const char* folderName, std::string& basePathOut) {
 
   for (const char* dictRoot : DICT_ROOTS) {
     std::string folderPath = std::string(dictRoot) + "/" + folderName;
-    std::string stem;
-    if (!findStem(folderPath.c_str(), stem)) continue;
-    basePathOut = folderPath + "/" + stem;
-    return true;
+    if (findBasePaths(folderPath.c_str(), basePathsOut)) return true;
   }
   return false;
 }

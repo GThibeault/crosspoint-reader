@@ -8,6 +8,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <utility>
 
 #include "DictZip.h"
 #include "DictionaryRegistry.h"
@@ -95,46 +96,61 @@ IfoFacts readIfoFacts(const std::string& ifoPath) {
 }  // namespace
 
 bool Dictionary::open(const char* folderName) {
-  basePath.clear();
-  hasSyn = false;
-  htmlDefinitions = false;
-  std::string resolved;
-  if (!DictionaryRegistry::resolveBasePath(folderName, resolved)) {
+  sources.clear();
+  activeSourceIndex = 0;
+
+  std::vector<std::string> resolvedPaths;
+  resolvedPaths.reserve(4);
+  if (!DictionaryRegistry::resolveBasePaths(folderName, resolvedPaths)) {
     LOG_ERR("DICT", "No dictionary found in folder '%s'", folderName ? folderName : "");
     return false;
   }
 
-  if (!Storage.exists((resolved + ".idx").c_str())) {
-    LOG_ERR("DICT", "%s.idx missing (compressed .idx.gz is not supported)", resolved.c_str());
-    return false;
-  }
-  hasPlainDict = Storage.exists((resolved + ".dict").c_str());
-  if (!hasPlainDict && !Storage.exists((resolved + ".dict.dz").c_str())) {
-    LOG_ERR("DICT", "%s has no .dict or .dict.dz", resolved.c_str());
-    return false;
-  }
-  const IfoFacts ifo = readIfoFacts(resolved + ".ifo");
-  if (ifo.offsets64) {
-    LOG_ERR("DICT", "%s uses 64-bit index offsets (unsupported)", resolved.c_str());
-    return false;
-  }
-  // Checked once here so buildPath() can never fail on the lookup path.
-  if (resolved.size() + LONGEST_SUFFIX_LEN + 1 > PATH_BUF_BYTES) {
-    LOG_ERR("DICT", "Dictionary path too long (%u chars, max %u)", static_cast<unsigned>(resolved.size()),
-            static_cast<unsigned>(PATH_BUF_BYTES - LONGEST_SUFFIX_LEN - 1));
-    return false;
-  }
-  hasSyn = Storage.exists((resolved + ".syn").c_str());
-  htmlDefinitions = ifo.htmlDefinitions;
+  sources.reserve(resolvedPaths.size());
+  for (auto& resolved : resolvedPaths) {
+    if (!Storage.exists((resolved + ".idx").c_str())) {
+      LOG_ERR("DICT", "%s.idx missing (compressed .idx.gz is not supported)", resolved.c_str());
+      continue;
+    }
+    const bool hasPlainDict = Storage.exists((resolved + ".dict").c_str());
+    if (!hasPlainDict && !Storage.exists((resolved + ".dict.dz").c_str())) {
+      LOG_ERR("DICT", "%s has no .dict or .dict.dz", resolved.c_str());
+      continue;
+    }
+    const IfoFacts ifo = readIfoFacts(resolved + ".ifo");
+    if (ifo.offsets64) {
+      LOG_ERR("DICT", "%s uses 64-bit index offsets (unsupported)", resolved.c_str());
+      continue;
+    }
+    // Checked once here so buildPath() can never fail on the lookup path.
+    if (resolved.size() + LONGEST_SUFFIX_LEN + 1 > PATH_BUF_BYTES) {
+      LOG_ERR("DICT", "Dictionary path too long (%u chars, max %u)", static_cast<unsigned>(resolved.size()),
+              static_cast<unsigned>(PATH_BUF_BYTES - LONGEST_SUFFIX_LEN - 1));
+      continue;
+    }
 
-  basePath = std::move(resolved);
+    Source source;
+    source.basePath = std::move(resolved);
+    source.hasPlainDict = hasPlainDict;
+    source.hasSyn = Storage.exists((source.basePath + ".syn").c_str());
+    source.htmlDefinitions = ifo.htmlDefinitions;
+    sources.push_back(std::move(source));
+  }
+
+  if (sources.empty()) {
+    LOG_ERR("DICT", "No supported dictionary found in folder '%s'", folderName ? folderName : "");
+    return false;
+  }
   return true;
 }
 
+bool Dictionary::definitionsAreHtml() const { return isOpen() && activeSource().htmlDefinitions; }
+
 bool Dictionary::buildPath(char* buf, size_t bufSize, const char* suffix) const {
-  const int n = snprintf(buf, bufSize, "%s%s", basePath.c_str(), suffix);
+  const char* basePath = activeSource().basePath.c_str();
+  const int n = snprintf(buf, bufSize, "%s%s", basePath, suffix);
   if (n < 0 || static_cast<size_t>(n) >= bufSize) {
-    LOG_ERR("DICT", "Path too long: %s%s", basePath.c_str(), suffix);
+    LOG_ERR("DICT", "Path too long: %s%s", basePath, suffix);
     return false;
   }
   return true;
@@ -160,17 +176,51 @@ bool Dictionary::sidecarIsStale(const std::string& sourcePath, const std::string
 
 bool Dictionary::needsIndex() {
   if (!isOpen()) return false;
+  const size_t previousSource = activeSourceIndex;
+  for (activeSourceIndex = 0; activeSourceIndex < sources.size(); activeSourceIndex++) {
+    if (needsCurrentIndex()) {
+      activeSourceIndex = previousSource;
+      return true;
+    }
+  }
+  activeSourceIndex = previousSource;
+  return false;
+}
+
+bool Dictionary::needsCurrentIndex() {
+  const Source& source = activeSource();
+  const std::string& basePath = source.basePath;
   if (sidecarIsStale(basePath + ".idx", basePath + ".qidx", QIDX_MAGIC)) return true;
-  return hasSyn && sidecarIsStale(basePath + ".syn", basePath + ".sidx", SIDX_MAGIC);
+  return source.hasSyn && sidecarIsStale(basePath + ".syn", basePath + ".sidx", SIDX_MAGIC);
 }
 
 bool Dictionary::buildIndex(void (*yieldFn)(void*), void* ctx, IndexResult* outResult) {
+  if (outResult) *outResult = IndexResult::Ok;
+  if (!isOpen()) {
+    if (outResult) *outResult = IndexResult::ReadError;
+    return false;
+  }
+
+  const size_t previousSource = activeSourceIndex;
+  for (activeSourceIndex = 0; activeSourceIndex < sources.size(); activeSourceIndex++) {
+    if (!buildCurrentIndex(yieldFn, ctx, outResult)) {
+      activeSourceIndex = previousSource;
+      return false;
+    }
+  }
+  activeSourceIndex = previousSource;
+  return true;
+}
+
+bool Dictionary::buildCurrentIndex(void (*yieldFn)(void*), void* ctx, IndexResult* outResult) {
   const auto fail = [outResult](IndexResult r) {
     if (outResult) *outResult = r;
     return false;
   };
   if (outResult) *outResult = IndexResult::Ok;
   if (!isOpen()) return fail(IndexResult::ReadError);
+  const Source& source = activeSource();
+  const std::string& basePath = source.basePath;
 
   // The .idx sidecar is mandatory — lookups binary-search it. Rebuild only when
   // stale so a .syn-only change doesn't force a needless rescan of the (much
@@ -182,11 +232,11 @@ bool Dictionary::buildIndex(void (*yieldFn)(void*), void* ctx, IndexResult* outR
 
   // The synonym sidecar is best-effort: a failure here (e.g. transient OOM)
   // leaves synonym lookups disabled but the dictionary otherwise usable, so it
-  // does not fail the build or overwrite *outResult. hasSyn is left alone — it
+  // does not fail the build or overwrite *outResult. Source::hasSyn is left alone — it
   // means "a .syn file exists", so needsIndex() keeps reporting the sidecar
   // stale and a later build retries. openSynonyms() is what declines the
   // synonym path while the sidecar is unusable.
-  if (hasSyn && sidecarIsStale(basePath + ".syn", basePath + ".sidx", SIDX_MAGIC) &&
+  if (source.hasSyn && sidecarIsStale(basePath + ".syn", basePath + ".sidx", SIDX_MAGIC) &&
       !buildSidecar(basePath + ".syn", basePath + ".sidx", SIDX_MAGIC, 4, yieldFn, ctx, nullptr)) {
     LOG_ERR("DICT", "Synonym index build failed; synonyms disabled for %s", basePath.c_str());
   }
@@ -321,7 +371,7 @@ bool Dictionary::openSession(LookupSession& session) {
 bool Dictionary::openSynonyms(LookupSession& session) {
   if (session.synOpened) return session.synSize > 0;
   session.synOpened = true;
-  if (!hasSyn) return false;
+  if (!activeSource().hasSyn) return false;
 
   char path[PATH_BUF_BYTES];
   if (!buildPath(path, sizeof(path), ".syn") || !Storage.openFileForRead("DICT", path, session.syn)) {
@@ -344,7 +394,7 @@ bool Dictionary::openSynonyms(LookupSession& session) {
   // instead and release both handles; needsIndex() still reports .sidx stale, so
   // the next index pass rebuilds it.
   if (session.synSampleCount == 0) {
-    LOG_ERR("DICT", "Synonym index unusable for %s; synonyms skipped", basePath.c_str());
+    LOG_ERR("DICT", "Synonym index unusable for %s; synonyms skipped", activeSource().basePath.c_str());
     session.synFailed = true;
     session.synSize = 0;
     session.sidx.close();
@@ -513,7 +563,7 @@ bool Dictionary::readDefinition(const DictLocation& location, std::string& out, 
   char pathBuf[PATH_BUF_BYTES];
   const char* path = pathBuf;
   uint32_t offset = 0;
-  if (hasPlainDict) {
+  if (activeSource().hasPlainDict) {
     if (!buildPath(pathBuf, sizeof(pathBuf), ".dict")) return fail(LookupResult::ReadError);
     offset = location.offset;
   } else {
@@ -527,7 +577,8 @@ bool Dictionary::readDefinition(const DictLocation& location, std::string& out, 
     if (!DictZip::extractEntry(pathBuf, location.offset, size, tmp, &xerr)) {
       // Map the specific extraction cause to the lookup result: allocation
       // failure (heap fragmentation) vs corrupt/truncated .dz vs an IO error.
-      LOG_ERR("DICT", "dictzip extraction failed for %s (error %d)", basePath.c_str(), static_cast<int>(xerr));
+      LOG_ERR("DICT", "dictzip extraction failed for %s (error %d)", activeSource().basePath.c_str(),
+              static_cast<int>(xerr));
       switch (xerr) {
         case DictZip::ExtractError::LowMemory:
           return fail(LookupResult::LowMemory);
@@ -629,12 +680,38 @@ void Dictionary::stemVariants(const std::string& word, std::vector<std::string>&
 
 bool Dictionary::lookup(const char* word, std::string& definitionOut, std::string& matchedHeadwordOut,
                         LookupResult* outResult) {
+  if (outResult) *outResult = LookupResult::NotFound;
+  const std::string cleaned = cleanWord(word);
+  if (cleaned.empty() || !isOpen()) return false;
+
+  definitionOut.clear();
+  matchedHeadwordOut.clear();
+  const size_t previousSource = activeSourceIndex;
+  std::vector<std::string> variants;
+  bool variantsReady = false;
+  for (activeSourceIndex = 0; activeSourceIndex < sources.size(); activeSourceIndex++) {
+    LookupResult sourceResult = LookupResult::NotFound;
+    if (lookupCurrent(cleaned, variants, variantsReady, definitionOut, matchedHeadwordOut, &sourceResult)) {
+      if (outResult) *outResult = LookupResult::Found;
+      return true;
+    }
+    // Only a completed miss falls through. A damaged index, failed read,
+    // decompression error or OOM must remain visible to the caller.
+    if (sourceResult != LookupResult::NotFound) {
+      if (outResult) *outResult = sourceResult;
+      return false;
+    }
+  }
+  activeSourceIndex = previousSource;
+  return false;
+}
+
+bool Dictionary::lookupCurrent(const std::string& cleaned, std::vector<std::string>& variants, bool& variantsReady,
+                               std::string& definitionOut, std::string& matchedHeadwordOut, LookupResult* outResult) {
   const auto setResult = [outResult](LookupResult r) {
     if (outResult) *outResult = r;
   };
   setResult(LookupResult::NotFound);
-  const std::string cleaned = cleanWord(word);
-  if (cleaned.empty() || !isOpen()) return false;
 
   // One set of open handles for the exact-match probe, the synonym probe and
   // every stem variant, scoped so .idx/.qidx (and .syn/.sidx) close before
@@ -655,14 +732,16 @@ bool Dictionary::lookup(const char* word, std::string& definitionOut, std::strin
 
     // Dictionary-authored synonyms (alternate spellings, irregular forms) take
     // precedence over the English-only stemmer, and are language-agnostic.
-    if (!location.found && hasSyn) {
+    if (!location.found && activeSource().hasSyn) {
       location = locateSynonym(session, cleaned.c_str(), &matchedHeadwordOut);
       searchFailed = searchFailed || location.readError;
     }
 
     if (!location.found) {
-      std::vector<std::string> variants;
-      stemVariants(cleaned, variants);
+      if (!variantsReady) {
+        stemVariants(cleaned, variants);
+        variantsReady = true;
+      }
       for (const auto& variant : variants) {
         location = locate(session, variant.c_str(), &matchedHeadwordOut);
         searchFailed = searchFailed || location.readError;

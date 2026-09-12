@@ -16,8 +16,8 @@ struct DictLocation {
   bool readError = false;
 };
 
-// Slim StarDict reader: exact-match lookup with a synonym and mini stemming
-// fallback.
+// Slim StarDict reader: exact-match lookup with synonym, mini stemming and
+// ordered source fall-through within the selected dictionary folder.
 //
 // Expects /dictionaries/<folder>/<stem>.idx (uncompressed) plus <stem>.dict or
 // <stem>.dict.dz, and an optional <stem>.syn synonym index. Lookups
@@ -43,10 +43,11 @@ class Dictionary {
     ReadError,   // found, but a file open/bounds/IO error prevented reading it
   };
 
-  // Resolve the dictionary folder and validate its files. Rejects
-  // dictionaries with 64-bit index offsets (idxoffsetbits=64 in .ifo).
+  // Resolve and validate every complete StarDict file set in the selected
+  // folder. Sources are searched in case-insensitive stem order. Dictionaries
+  // with 64-bit index offsets (idxoffsetbits=64 in .ifo) are rejected.
   bool open(const char* folderName);
-  bool isOpen() const { return !basePath.empty(); }
+  bool isOpen() const { return !sources.empty(); }
 
   // True when the .qidx sidecar (or the .sidx sidecar of a present .syn) is
   // missing or stale — call buildIndex() first so the UI can show an
@@ -54,7 +55,7 @@ class Dictionary {
 
   // True when the .ifo declares sametypesequence=h — definitions are HTML and
   // the viewer may lay them out through the EPUB rendering pipeline.
-  bool definitionsAreHtml() const { return htmlDefinitions; }
+  bool definitionsAreHtml() const;
 
   bool needsIndex();
 
@@ -101,6 +102,20 @@ class Dictionary {
   // Length of the longest suffix appended to basePath (".dict.dz"); used for
   // the open()-time length check.
   static constexpr size_t LONGEST_SUFFIX_LEN = sizeof(".dict.dz") - 1;
+
+  struct Source {
+    std::string basePath;
+    bool hasPlainDict = false;
+    bool hasSyn = false;
+    bool htmlDefinitions = false;
+  };
+
+  const Source& activeSource() const { return sources[activeSourceIndex]; }
+
+  bool needsCurrentIndex();
+  bool buildCurrentIndex(void (*yieldFn)(void*), void* ctx, IndexResult* outResult);
+  bool lookupCurrent(const std::string& cleaned, std::vector<std::string>& variants, bool& variantsReady,
+                     std::string& definitionOut, std::string& matchedHeadwordOut, LookupResult* outResult);
 
   // Compose "<basePath><suffix>" into a caller-supplied stack buffer. The
   // lookup path runs this instead of `basePath + suffix` so path construction
@@ -183,10 +198,11 @@ class Dictionary {
   // EOF/error. Over-long words are truncated but the stream stays in sync.
   static int readWordInto(HalFile& file, char* buf, size_t bufSize);
 
-  std::string basePath;  // "/dictionaries/<folder>/<stem>", empty when not open
-  bool hasPlainDict = false;
-  bool hasSyn = false;  // a <stem>.syn synonym index exists next to the .idx
-  bool htmlDefinitions = false;
+  // Allocated once by open() and retained for the activity lifetime. One
+  // Dictionary instance and scan buffer are reused as lookup falls through, so
+  // adding sources does not multiply the 256-byte working buffer or open files.
+  std::vector<Source> sources;
+  size_t activeSourceIndex = 0;
 
   // Shared scan buffer: lookups are single-threaded and this avoids a
   // 256-byte array on the stack of every locate() call.

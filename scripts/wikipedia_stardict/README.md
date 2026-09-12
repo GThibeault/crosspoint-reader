@@ -65,6 +65,18 @@ Copy the entire output directory to `/dictionaries/wikipedia-en/` on the SD
 card, select it in **Settings -> Reader -> Dictionary**, and look up a known
 article title. The first lookup builds the firmware's sampled index sidecars.
 
+To use Wikipedia after a conventional dictionary, put both complete file sets
+in the same selected folder. CrossPoint searches the filename stems in
+case-insensitive order and falls through only on a genuine miss. Rename every
+file in a set consistently if an explicit order is needed, for example:
+
+```text
+/dictionaries/english/00-webster.idx
+/dictionaries/english/00-webster.dict.dz
+/dictionaries/english/10-wikipedia.idx
+/dictionaries/english/10-wikipedia.dict
+```
+
 ## Compatibility limits
 
 - Headwords longer than 255 UTF-8 bytes are skipped.

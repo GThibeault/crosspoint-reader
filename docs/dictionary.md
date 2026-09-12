@@ -6,7 +6,8 @@ Look up words while reading an EPUB using an offline StarDict dictionary stored 
 
 The reader supports **StarDict** dictionaries. When searching for dictionaries online, look for "StarDict format" or files with `.dict`, `.idx`, and `.ifo` extensions.
 
-A dictionary folder must contain:
+A dictionary folder must contain one or more complete file sets. Each set uses
+one filename stem and contains:
 
 - `.idx` — word index (required, **must be uncompressed** — a `.idx.gz` will not work; decompress it on your computer with `gzip -d` first)
 - `.dict` or `.dict.dz` — definition data (`.dict.dz` is supported as-is; entries are decompressed on the fly during lookup)
@@ -17,11 +18,11 @@ Not supported: dictionaries with 64-bit index offsets (`idxoffsetbits=64` in the
 
 ## Setting Up a Dictionary
 
-1. Copy your dictionary folder(s) to `/dictionaries/` on the SD card — one dictionary per folder, e.g. `/dictionaries/webster/webster.idx` + `webster.dict.dz`. A hidden `/.dictionaries/` folder (dot-prefixed) works the same way, for keeping it out of the file browser.
+1. Copy your dictionary folder(s) to `/dictionaries/` on the SD card, e.g. `/dictionaries/english/webster.idx` + `webster.dict.dz`. A hidden `/.dictionaries/` folder (dot-prefixed) works the same way, for keeping it out of the file browser.
 2. Open **Settings → Reader → Dictionary** on the device.
 3. Select a dictionary from the list, or **None** to disable lookups.
 
-The Dictionary setting only appears when at least one usable dictionary folder exists. Folders containing more than one dictionary (multiple `.idx` stems) are skipped as ambiguous.
+The Dictionary setting only appears when at least one usable dictionary folder exists. If the selected folder contains multiple file sets, they form a fallback chain: the reader searches them in case-insensitive filename-stem order and advances to the next only when the previous dictionary reports a genuine miss. Prefix every file in a set consistently (for example, `00-webster.*` and `10-wikipedia.*`) to choose the order. Read, indexing, decompression, and memory failures stop the chain and remain visible as errors.
 
 ## Looking Up a Word
 
