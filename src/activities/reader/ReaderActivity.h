@@ -73,6 +73,5 @@ class ReaderActivity : public Activity {
   bool handleHomeGesture() final;
 
   bool isReaderActivity() const final { return true; }
-  bool appliesNightMode() const final { return true; }
   bool handleForcedRefresh() final;
 };

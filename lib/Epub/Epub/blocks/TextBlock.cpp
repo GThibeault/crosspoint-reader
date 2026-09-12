@@ -126,6 +126,15 @@ bool TextBlock::hasRuby() const {
   return false;
 }
 
+int TextBlock::renderedWordAdvance(const GfxRenderer& renderer, const int fontId, const uint16_t i) const {
+  if (i >= numWords) return 0;
+  const uint8_t boundary = focusBoundary(i);
+  if (boundary == 0 || boundary >= wordTextLen(i)) {
+    return renderer.getTextAdvanceX(fontId, wordText(i), wordStyle(i));
+  }
+  return focusSuffixX(i) + renderer.getTextAdvanceX(fontId, wordText(i) + boundary, wordStyle(i));
+}
+
 void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int x, const int y) const {
   if (!isValid) {
     LOG_ERR("TXB", "Render skipped: invalid block");
