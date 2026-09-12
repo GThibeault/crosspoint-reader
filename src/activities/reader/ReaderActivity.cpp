@@ -84,8 +84,8 @@ void ReaderActivity::onExit() {
   endOfBookOptionsReady.store(false, std::memory_order_release);
 }
 
-bool ReaderActivity::handleBackNavigation(const bool backReleased, const unsigned long heldMs) {
-  if (!backReleased) return false;
+bool ReaderActivity::handleBackNavigation(const bool backTriggered, const unsigned long heldMs) {
+  if (!backTriggered) return false;
   const bool longPress = heldMs >= ReaderUtils::GO_BACK_OR_HOME_MS;
   if (returnToPreviousOnBack) {
     finish();
@@ -178,22 +178,19 @@ void ReaderActivity::loop() {
                          ? mappedInput.wasSwipe()
                          : MappedInputManager::SwipeDir::None;
   const int screenWidth = renderer.getScreenWidth();
-  const int screenHeight = renderer.getScreenHeight();
   const int zoneWidth = screenWidth / 3;
-  const int zoneHeight = screenHeight / 3;
-  const bool centerTap = tapped && SETTINGS.tapForReaderMenu && touchX >= zoneWidth &&
-                         touchX < screenWidth - zoneWidth && touchY >= zoneHeight &&
-                         touchY < screenHeight - zoneHeight;
-  const bool touchMenu = touchEnabled && (mappedInput.wasMenuGesture() || centerTap);
+  const bool touchMenu = ReaderUtils::isTouchMenuGesture(renderer, mappedInput);
   const bool backGesture = mappedInput.wasBackGesture();
-  const bool backReleased = !backGesture && mappedInput.wasReleased(MappedInputManager::Button::Back);
+  const bool backTriggered =
+      !backGesture && (mappedInput.wasLongPressed(MappedInputManager::Button::Back, ReaderUtils::GO_BACK_OR_HOME_MS) ||
+                       mappedInput.wasReleased(MappedInputManager::Button::Back));
   const bool confirmReleased = mappedInput.wasReleased(MappedInputManager::Button::Confirm);
   const bool powerReleased = mappedInput.wasReleased(MappedInputManager::Button::Power);
   const bool downReleased = mappedInput.wasReleased(MappedInputManager::Button::Down);
   const unsigned long heldMs = mappedInput.getHeldTime();
 
   if (automaticPageTurnActive) {
-    if (confirmReleased || backReleased || touchMenu) {
+    if (confirmReleased || backTriggered || touchMenu) {
       automaticPageTurnActive = false;
       requestUpdate();
       return;
@@ -253,7 +250,7 @@ void ReaderActivity::loop() {
 
   if (handleEndOfBookMenu()) return;
   if ((confirmReleased || touchMenu) && performReaderAction(ReaderAction::OpenMenu)) return;
-  if (handleBackNavigation(backReleased, heldMs)) return;
+  if (handleBackNavigation(backTriggered, heldMs)) return;
 
   if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::LINKS && powerReleased && !downReleased &&
       performReaderAction(ReaderAction::OpenLinks)) {
@@ -280,17 +277,15 @@ void ReaderActivity::loop() {
   const bool swapFront = mappedInput.isNavDirectionSwapped();
   const auto prevButton = swapFront ? MappedInputManager::Button::Right : MappedInputManager::Button::Left;
   const auto nextButton = swapFront ? MappedInputManager::Button::Left : MappedInputManager::Button::Right;
-  bool prevTriggered = tiltPrev ||
-                       (usePress ? (mappedInput.wasPressed(MappedInputManager::Button::PageBack) ||
-                                    mappedInput.wasPressed(prevButton))
-                                 : (mappedInput.wasReleased(MappedInputManager::Button::PageBack) ||
-                                    mappedInput.wasReleased(prevButton)));
+  const auto pageButtonTriggered = [&](const MappedInputManager::Button button) {
+    if (usePress) return mappedInput.wasPressed(button);
+    return mappedInput.wasLongPressed(button, ReaderUtils::SKIP_HOLD_MS) || mappedInput.wasReleased(button);
+  };
+  bool prevTriggered =
+      tiltPrev || pageButtonTriggered(MappedInputManager::Button::PageBack) || pageButtonTriggered(prevButton);
   const bool powerTurn = SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PAGE_TURN && powerReleased;
-  bool nextTriggered = tiltNext ||
-                       (usePress ? (mappedInput.wasPressed(MappedInputManager::Button::PageForward) || powerTurn ||
-                                    mappedInput.wasPressed(nextButton))
-                                 : (mappedInput.wasReleased(MappedInputManager::Button::PageForward) || powerTurn ||
-                                    mappedInput.wasReleased(nextButton)));
+  bool nextTriggered = tiltNext || pageButtonTriggered(MappedInputManager::Button::PageForward) || powerTurn ||
+                       pageButtonTriggered(nextButton);
   const bool fromTilt = tiltPrev || tiltNext;
   unsigned long pageHeldMs = heldMs;
 
@@ -315,7 +310,7 @@ void ReaderActivity::loop() {
 
   if (powerReleased && downReleased) return;
 
-  const bool longPress = !fromTilt && pageHeldMs > ReaderUtils::SKIP_HOLD_MS;
+  const bool longPress = !fromTilt && pageHeldMs >= ReaderUtils::SKIP_HOLD_MS;
   if (longPress && SETTINGS.longPressButtonBehavior == SETTINGS.CHAPTER_SKIP) {
     skipPages((nextTriggered ? 1 : -1) * longPressSkipAmount());
     requestUpdate();

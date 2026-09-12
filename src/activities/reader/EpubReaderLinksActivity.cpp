@@ -19,7 +19,7 @@ void EpubReaderLinksActivity::buildRowItems() {
   rowItems.reserve(links.size());
   for (const auto& link : links) {
     fui::ListItem item;
-    item.label = link.text[0] ? link.text : tr(STR_LINK);
+    item.label = link.href[0] ? link.href : tr(STR_LINK);
     item.actionValue = static_cast<int16_t>(rowItems.size());
     rowItems.push_back(item);
   }

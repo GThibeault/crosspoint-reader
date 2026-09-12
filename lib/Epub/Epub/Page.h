@@ -2,10 +2,12 @@
 #include <HalStorage.h>
 
 #include <algorithm>
+#include <cstring>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "FootnoteEntry.h"
 #include "PageLink.h"
 #include "blocks/ImageBlock.h"
 #include "blocks/TextBlock.h"
@@ -75,8 +77,10 @@ class Page {
  public:
   // the list of block index and line numbers on this page
   std::vector<std::shared_ptr<PageElement>> elements;
+  std::vector<FootnoteEntry> footnotes;
+  static constexpr uint16_t MAX_FOOTNOTES_PER_PAGE = 16;
   std::vector<PageLink> links;
-  static constexpr uint16_t MAX_LINKS_PER_PAGE = PageLink::MAX_PER_PAGE;
+  static constexpr uint16_t MAX_LINKS_PER_PAGE = 32;
 
   // Zero-based visible-codepoint offset where this page starts. Not part of the serialized page
   // body (it lives in the section's visible-offset LUT); Section::loadPage* fills it in from the
@@ -84,25 +88,33 @@ class Page {
   // progress without a second section-file open per page turn.
   uint32_t visibleTextOffset = 0;
 
-  void addLink(const char* text, const char* href, const uint16_t linkId = 0) {
-    if (linkId != 0 && std::any_of(links.begin(), links.end(),
-                                  [linkId](const PageLink& existing) { return existing.id == linkId; })) {
-      return;
-    }
-    if (links.size() >= MAX_LINKS_PER_PAGE) return;
-    PageLink entry;
-    strncpy(entry.text, text, sizeof(entry.text) - 1);
-    entry.text[sizeof(entry.text) - 1] = '\0';
+  void addFootnote(const char* number, const char* href) {
+    if (footnotes.size() >= MAX_FOOTNOTES_PER_PAGE) return;  // Cap per-page footnotes
+    FootnoteEntry entry;
+    strncpy(entry.number, number, sizeof(entry.number) - 1);
+    entry.number[sizeof(entry.number) - 1] = '\0';
     strncpy(entry.href, href, sizeof(entry.href) - 1);
     entry.href[sizeof(entry.href) - 1] = '\0';
-    entry.id = linkId;
-    links.push_back(entry);
+    footnotes.push_back(entry);
   }
 
-  // Derive screen-space touch targets from the cached per-word link IDs. Hit
-  // rectangles are transient and stay out of the section cache.
-  uint8_t buildLinkHitRects(const GfxRenderer& renderer, int fontId, int lineHeight, int xOffset, int yOffset,
-                            PageLinkHitRegions* regions, uint8_t regionCapacity) const;
+  bool addLink(const char* href, int16_t x, int16_t y, int16_t width, int16_t height) {
+    if (!href || width <= 0 || height <= 0 || links.size() >= MAX_LINKS_PER_PAGE) {
+      return false;
+    }
+    const size_t hrefLen = strnlen(href, sizeof(PageLink::href));
+    if (hrefLen == 0 || hrefLen == sizeof(PageLink::href)) {
+      return false;
+    }
+    links.emplace_back();
+    auto& link = links.back();
+    memcpy(link.href, href, hrefLen + 1);
+    link.x = x;
+    link.y = y;
+    link.width = width;
+    link.height = height;
+    return true;
+  }
 
   void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) const;
   void renderImages(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) const;

@@ -5,6 +5,7 @@
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Memory.h>
+#include <Utf8.h>
 
 #include <algorithm>
 
@@ -99,6 +100,25 @@ void FileBrowserActivity::rebuildRowItems() {
     item.actionValue = static_cast<int16_t>(i);
     rowItems.push_back(item);
   }
+
+  // One SD pass for every CJK filename in the folder; repaints then hit the
+  // resident tables instead of re-reading per-string. Getter form: no
+  // concatenated copy (a bare-new string append aborts under heap pressure).
+  // The last index covers the bottom path band: basepath (possibly a CJK
+  // folder name) draws in the same small font, so it must live in the same
+  // batch or it would evict the rows' glyphs when the heap gate disables
+  // union merging. (prewarmFallbackText appends the truncation ellipsis.)
+  struct PrewarmCtx {
+    const std::vector<std::string>* names;
+    const std::string* path;
+  } prewarmCtx{&rowNames, &basepath};
+  renderer.prewarmFallbackText(
+      uiScaleSpec().smallFontId,
+      [](const void* ctx, uint32_t i) -> const char* {
+        const auto* c = static_cast<const PrewarmCtx*>(ctx);
+        return i < c->names->size() ? (*c->names)[i].c_str() : c->path->c_str();
+      },
+      &prewarmCtx, static_cast<uint32_t>(rowNames.size()) + 1);
 }
 
 void FileBrowserActivity::onEnter() {
@@ -289,7 +309,9 @@ void FileBrowserActivity::activateSelected(const bool forceDelete) {
 
     std::string heading = tr(STR_DELETE) + std::string("? ");
 
-    startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading, entry), handler);
+    // Compose the display copy; `entry` stays raw for the delete path itself.
+    startActivityForResult(
+        std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading, utf8ComposeNfc(entry)), handler);
     return;
   } else {
     // --- SHORT PRESS ACTION: OPEN/NAVIGATE ---
@@ -381,6 +403,11 @@ bool FileBrowserActivity::handleButtons() {
 }
 
 std::string getFileName(std::string filename) {
+  // Display copy only — `files[]` keeps the raw directory-entry bytes, because
+  // FAT long-filename lookup is byte-exact: an NFC-normalized path would fail
+  // to open the NFD entry macOS wrote. Composing here fixes rendering (fonts
+  // carry precomposed syllables / letters only) without touching paths.
+  filename = utf8ComposeNfc(filename);
   if (filename.back() == '/') {
     filename.pop_back();
     if (!UITheme::getInstance().getTheme().showsFileIcons()) {
@@ -403,8 +430,8 @@ std::string getFileExtension(const std::string& filename) {
 void FileBrowserActivity::buildScreen(UiScreen& screen) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   // Content below the GUI.drawHeader band, above the button hints.
-  screen.setContentMargin(fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), 0,
-                                      static_cast<int16_t>(metrics.buttonHintsHeight), 0});
+  screen.setContentMarginFromScreen(fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), 0,
+                                                static_cast<int16_t>(metrics.buttonHintsHeight), 0});
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
   // Full path band at the bottom: separator on top, left-truncated so the
@@ -469,6 +496,10 @@ void FileBrowserActivity::buildScreen(UiScreen& screen) {
   // The trailing value here is just the short extension: skip the balanced
   // 60%-band wrap cap and let both name lines run the full width before it.
   props.balanceWrappedLabelWithValue = false;
+  // Wrapped two-line names shrink how many rows fit a page, so the last row
+  // of a page can end up in leftover space: draw it as a partial preview so
+  // files past the fold are visibly present, not silently absent.
+  props.partialTrailingRow = true;
   syncListViewport(screen, props);
   screen.list(props);
 }
@@ -499,7 +530,6 @@ void FileBrowserActivity::drawFooter() {
 }
 
 size_t FileBrowserActivity::findEntry(const std::string& name) const {
-  for (size_t i = 0; i < files.size(); i++)
-    if (files[i] == name) return i;
-  return 0;
+  const auto entry = std::find(files.begin(), files.end(), name);
+  return entry != files.end() ? static_cast<size_t>(entry - files.begin()) : 0;
 }

@@ -3,13 +3,14 @@
 #include <HalStorage.h>
 #include <expat.h>
 
+#include <array>
 #include <climits>
 #include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
-#include "Epub/PageLink.h"
+#include "Epub/FootnoteEntry.h"
 #include "Epub/ParsedText.h"
 #include "Epub/blocks/ImageBlock.h"
 #include "Epub/blocks/TextBlock.h"
@@ -70,6 +71,9 @@ class ChapterHtmlSlimParser {
     CssTextDecoration textDecoration = CssTextDecoration::None;
     bool hasDirection = false;
     CssTextDirection direction = CssTextDirection::Ltr;
+    bool setsParagraphDirection = false;
+    bool hasTextAlign = false;
+    CssTextAlign textAlign = CssTextAlign::Left;
     bool hasSup = false, sup = false;
     bool hasSub = false, sub = false;
   };
@@ -81,11 +85,22 @@ class ChapterHtmlSlimParser {
   CssTextDecoration effectiveTextDecoration = CssTextDecoration::None;
   bool effectiveDirectionDefined = false;
   CssTextDirection effectiveDirection = CssTextDirection::Ltr;
+  bool effectiveTextAlignDefined = false;
+  CssTextAlign effectiveTextAlign = CssTextAlign::Left;
   bool effectiveSup = false;
   bool effectiveSub = false;
+  static constexpr size_t MAX_GRID_TABLE_COLUMNS = 4;
+  static constexpr size_t MAX_GRID_TABLE_CELL_WORDS = 32;
+  static constexpr size_t MAX_GRID_TABLE_CELL_BYTES = 512;
   int tableDepth = 0;
-  int tableRowIndex = 0;
-  int tableColIndex = 0;
+  bool insideTableCell = false;
+  bool tableRowStacked = false;
+  bool tableRowRtl = false;
+  uint16_t tableRowsSpannedRemaining = 0;
+  size_t tableCellTextBytes = 0;
+  std::vector<std::unique_ptr<ParsedText>> tableRowCells;
+  std::array<std::vector<std::shared_ptr<TextBlock>>, MAX_GRID_TABLE_COLUMNS> tableCellLines;
+  std::vector<uint32_t> tableLineVisibleOffsets;
   bool listItemBulletOnly = false;  // true when currentTextBlock has only the <li> bullet
 
   // Anchor-to-page mapping: tracks which page each HTML id attribute lands on
@@ -103,23 +118,17 @@ class ChapterHtmlSlimParser {
   uint32_t currentPageVisibleOffset = 0;
   bool currentPageVisibleOffsetSet = false;
   bool insideBody = false;
+  bool htmlEnded_ = false;
   bool syntheticCharacterData = false;
   uint16_t nonVisibleTextDepth = 0;
 
-  // Internal EPUB link tracking
-  bool insideInternalLink = false;
-  int internalLinkDepth = -1;
-  PageLink currentLink = {};
-  int currentLinkTextLen = 0;
-  int currentLinkStartWordIndex = 0;
-  uint16_t activeLinkId = 0;
-  uint16_t nextLinkId = 1;
-  struct PendingPageLink {
-    int startWordIndex;
-    int endWordIndex;
-    PageLink link;
-  };
-  std::vector<PendingPageLink> pendingLinks;
+  // Footnote link tracking
+  bool insideFootnoteLink = false;
+  int footnoteLinkDepth = -1;
+  uint8_t currentFootnoteLinkId = 0;
+  FootnoteEntry currentFootnote = {};
+  int currentFootnoteLinkTextLen = 0;
+  std::vector<std::pair<int, FootnoteEntry>> pendingFootnotes;  // <wordIndex, entry>
   int wordsExtractedInBlock = 0;
 
   // Resumable parse state. The one-shot parseAndBuildPages() drives these
@@ -136,11 +145,17 @@ class ChapterHtmlSlimParser {
   void startNewTextBlock(const BlockStyle& blockStyle);
   void flushPendingAnchor();
   void flushPartWordBuffer();
+  void fallbackTableRowToStacked();
+  void closeTableCell();
+  void finishTableRow();
+  void addTableRowSeparator();
   void setCurrentPageVisibleOffset(uint32_t offset);
   void makePages();
   static EpdFontFamily::Style fontStyleForTextDecoration(CssTextDecoration decoration);
   static void applyDirectionToEntry(StyleStackEntry& entry, const CssStyle& css);
   static void applyTextDecorationToEntry(StyleStackEntry& entry, const CssStyle& css);
+  static void applyVerticalAlignToEntry(StyleStackEntry& entry, const CssStyle& css);
+  void pushTableTextStyleEntry(const CssStyle& cssStyle);
   void pushDecorationStyleEntry(CssTextDecoration defaultDecoration, const CssStyle& cssStyle);
   void emitHorizontalRule(const BlockStyle& blockStyle);
   // XML callbacks

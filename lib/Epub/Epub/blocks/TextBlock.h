@@ -4,10 +4,12 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "Block.h"
 #include "BlockStyle.h"
+#include "Epub/FootnoteEntry.h"
 
 // Represents a line of text on a page.
 //
@@ -22,7 +24,6 @@
 //   uint16_t textOff[wordCount]        byte offset of word i's text in text[]
 //   int16_t  xpos[wordCount]
 //   uint16_t focusSuffixX[wordCount]   present only when focusPresent
-//   uint16_t linkId[wordCount]         present only when linksPresent
 //   uint8_t  styles[wordCount]
 //   uint8_t  focusBoundary[wordCount]  present only when focusPresent
 //   char     text[textBytes]           all words back to back, NUL-terminated
@@ -38,12 +39,19 @@
 // entirely when no word on the line has a split (zero per-word RAM cost when
 // focus reading is disabled).
 class TextBlock final : public Block {
+ public:
+  struct LinkSpan {
+    char href[FOOTNOTE_HREF_LEN];
+    int16_t x;
+    int16_t width;
+    int16_t topLift;
+  };
+
  private:
   BlockStyle blockStyle;
   uint16_t numWords = 0;
   uint16_t textBytes = 0;  // total size of the text region, including NULs
   bool focusPresent = false;
-  bool linksPresent = false;
   bool isValid = true;
   // The ONLY allocation: makeUniqueNoThrow, so OOM yields an invalid block
   // instead of abort() (bare new is not nothrow with -fno-exceptions).
@@ -53,14 +61,16 @@ class TextBlock final : public Block {
   const uint16_t* textOffArr = nullptr;
   const int16_t* xposArr = nullptr;
   const uint16_t* focusSuffixXArr = nullptr;  // null when !focusPresent
-  const uint16_t* linkIdArr = nullptr;        // null when !linksPresent
   const uint8_t* stylesArr = nullptr;
   const uint8_t* focusBoundaryArr = nullptr;  // null when !focusPresent
   const char* textArr = nullptr;
   std::vector<std::string> rubyTexts;
+  // Layout-only metadata. ChapterHtmlSlimParser moves it into Page::links
+  // immediately; cached TextBlocks therefore keep the same compact format.
+  std::vector<LinkSpan> linkSpans;
 
   TextBlock() = default;  // deserialize() fills the fields directly
-  static size_t arenaSize(uint16_t wordCount, bool hasFocus, bool hasLinks, uint16_t textBytes);
+  static size_t arenaSize(uint16_t wordCount, bool hasFocus, uint16_t textBytes);
   void bindArenaPointers();
 
  public:
@@ -69,8 +79,8 @@ class TextBlock final : public Block {
   // is false -- callers must check and fail the line instead of using it.
   explicit TextBlock(const std::vector<std::string>& words, const std::vector<int16_t>& wordXpos,
                      const std::vector<EpdFontFamily::Style>& wordStyles, const std::vector<uint8_t>& focusBoundary,
-                     const std::vector<uint16_t>& focusSuffixX, const std::vector<uint16_t>& linkIds,
-                     const BlockStyle& blockStyle = BlockStyle(), std::vector<std::string> rubyTexts = {});
+                     const std::vector<uint16_t>& focusSuffixX, const BlockStyle& blockStyle = BlockStyle(),
+                     std::vector<std::string> rubyTexts = {}, std::vector<LinkSpan> linkSpans = {});
   ~TextBlock() override = default;
   TextBlock(const TextBlock&) = delete;
   TextBlock& operator=(const TextBlock&) = delete;
@@ -90,11 +100,10 @@ class TextBlock final : public Block {
   EpdFontFamily::Style wordStyle(const uint16_t i) const { return static_cast<EpdFontFamily::Style>(stylesArr[i]); }
   uint8_t focusBoundary(const uint16_t i) const { return focusPresent ? focusBoundaryArr[i] : 0; }
   uint16_t focusSuffixX(const uint16_t i) const { return focusPresent ? focusSuffixXArr[i] : 0; }
-  uint16_t linkId(const uint16_t i) const { return linksPresent ? linkIdArr[i] : 0; }
-  int renderedWordAdvance(const GfxRenderer& renderer, int fontId, uint16_t i) const;
   bool hasRuby() const;
   int getRubyShift(int ascender) const { return hasRuby() ? (ascender / 2) : 0; }
   const std::vector<std::string>& getRubyTexts() const { return rubyTexts; }
+  std::vector<LinkSpan> takeLinkSpans() { return std::move(linkSpans); }
 
   void render(const GfxRenderer& renderer, int fontId, int x, int y) const;
   BlockType getType() override { return TEXT_BLOCK; }

@@ -32,7 +32,6 @@ import re
 import signal
 import sys
 import threading
-import time
 from collections import deque
 from datetime import datetime
 
@@ -66,11 +65,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=str,
         default="",
         help="Suppress lines containing this keyword (case-insensitive)",
-    )
-    parser.add_argument(
-        "--no-graph",
-        action="store_true",
-        help="Disable the matplotlib memory graph (plain serial console + command prompt only)",
     )
     return parser
 
@@ -122,17 +116,14 @@ time_data: deque[str] = deque(maxlen=MAX_POINTS)
 free_mem_data: deque[float] = deque(maxlen=MAX_POINTS)
 total_mem_data: deque[float] = deque(maxlen=MAX_POINTS)
 max_alloc_data: deque[float] = deque(maxlen=MAX_POINTS)
+psram_time_data: deque[str] = deque(maxlen=MAX_POINTS)
+psram_free_mem_data: deque[float] = deque(maxlen=MAX_POINTS)
+psram_total_mem_data: deque[float] = deque(maxlen=MAX_POINTS)
+psram_max_alloc_data: deque[float] = deque(maxlen=MAX_POINTS)
 data_lock: threading.Lock = threading.Lock()  # Prevent reading while writing
 
 # Global shutdown flag
 shutdown_event = threading.Event()
-
-# Command-ack handshake: the firmware answers every CMD: line with CMDACK:<cmd>
-# (a handler ran) or CMDERR:<reason>:<cmd> (e.g. unknown — includes commands
-# compiled out of the running build). The reader thread sets ack_event when
-# either arrives so input_worker can report success, rejection, or a timeout.
-ACK_TIMEOUT_S = 2.0
-ack_event = threading.Event()
 
 # Initialize colors
 init(autoreset=True)
@@ -245,43 +236,12 @@ def parse_memory_line(line: str) -> tuple[int | None, int | None, int | None]:
     )
 
 
-def reopen_serial(ser_holder: dict) -> bool:
-    """
-    Close the (possibly dead) serial port and retry opening it until it comes back
-    or shutdown is requested. Devices re-enumerate on reboot/deep-sleep, so the
-    monitor must survive the port vanishing and reappearing. Returns True once
-    reconnected, False if shutting down.
-    """
-    try:
-        ser_holder["ser"].close()
-    except (OSError, serial.SerialException):
-        pass
-    print(f"{Fore.YELLOW}Serial disconnected - waiting for device to come back...{Style.RESET_ALL}")
-    while not shutdown_event.is_set():
-        try:
-            # Same no-reset open as the initial connect: deassert DTR/RTS
-            # before open() so the reconnect never reboots the device.
-            ser = serial.Serial(None, ser_holder["baud"], timeout=0.1)
-            ser.port = ser_holder["port"]
-            ser.dtr = False
-            ser.rts = False
-            ser.open()
-            ser_holder["ser"] = ser
-            print(f"{Fore.GREEN}Reconnected to {ser_holder['port']}{Style.RESET_ALL}")
-            return True
-        except (OSError, serial.SerialException):
-            time.sleep(0.25)
-    return False
-
-
-def serial_worker(ser_holder: dict, kwargs: dict[str, str]) -> None:
+def serial_worker(ser, kwargs: dict[str, str]) -> None:
     """
     Runs in a background thread. Handles reading serial data, printing to console,
     updating memory usage data for graphing, and processing screenshot data.
-    Automatically reconnects when the device reboots or is replugged.
     Monitors the global shutdown event for graceful termination.
     """
-    ser = ser_holder["ser"]
     print(f"{Fore.CYAN}--- Opening serial port ---{Style.RESET_ALL}")
     filter_keyword = kwargs.get("filter", "").lower()
     suppress = kwargs.get("suppress", "").lower()
@@ -306,88 +266,79 @@ def serial_worker(ser_holder: dict, kwargs: dict[str, str]) -> None:
 
     try:
         while not shutdown_event.is_set():
-            try:
-                if expecting_screenshot:
-                    data = ser.read(screenshot_size - len(screenshot_data))
-                    if not data:
+            if expecting_screenshot:
+                data = ser.read(screenshot_size - len(screenshot_data))
+                if not data:
+                    continue
+                screenshot_data += data
+                if len(screenshot_data) == screenshot_size:
+                    if Image:
+                        img = Image.frombytes("1", (800, 480), screenshot_data)
+                        # We need to rotate the image because the raw data is in landscape mode
+                        img = img.transpose(Image.ROTATE_270)
+                        img.save("screenshot.bmp")
+                        print(
+                            f"{Fore.GREEN}Screenshot saved to screenshot.bmp{Style.RESET_ALL}"
+                        )
+                    else:
+                        with open("screenshot.raw", "wb") as f:
+                            f.write(screenshot_data)
+                        print(
+                            f"{Fore.GREEN}Screenshot saved to screenshot.raw (PIL not available){Style.RESET_ALL}"
+                        )
+                    expecting_screenshot = False
+                    screenshot_data = b""
+            else:
+                try:
+                    raw_data = ser.readline().decode("utf-8", errors="replace")
+
+                    if not raw_data:
                         continue
-                    screenshot_data += data
-                    if len(screenshot_data) == screenshot_size:
-                        if Image:
-                            img = Image.frombytes("1", (800, 480), screenshot_data)
-                            # We need to rotate the image because the raw data is in landscape mode
-                            img = img.transpose(Image.ROTATE_270)
-                            img.save("screenshot.bmp")
-                            print(
-                                f"{Fore.GREEN}Screenshot saved to screenshot.bmp{Style.RESET_ALL}"
-                            )
-                        else:
-                            with open("screenshot.raw", "wb") as f:
-                                f.write(screenshot_data)
-                            print(
-                                f"{Fore.GREEN}Screenshot saved to screenshot.raw (PIL not available){Style.RESET_ALL}"
-                            )
-                        expecting_screenshot = False
-                        screenshot_data = b""
-                    continue
 
-                raw_data = ser.readline().decode("utf-8", errors="replace")
+                    clean_line = raw_data.strip()
+                    if not clean_line:
+                        continue
 
-                if not raw_data:
-                    continue
+                    if clean_line.startswith("SCREENSHOT_START:"):
+                        screenshot_size = int(clean_line.split(":")[1])
+                        expecting_screenshot = True
+                        continue
+                    elif clean_line == "SCREENSHOT_END":
+                        continue  # ignore
 
-                clean_line = raw_data.strip()
-                if not clean_line:
-                    continue
+                    # Add PC timestamp
+                    pc_time = datetime.now().strftime("%H:%M:%S")
+                    formatted_line = re.sub(r"^\[\d+\]", f"[{pc_time}]", clean_line)
 
-                # Command acks bypass filter/suppress: they are direct feedback
-                # for a command the user just typed, never routine log noise.
-                if clean_line.startswith("CMDACK:"):
-                    print(f"{Fore.GREEN}Command OK: {clean_line[len('CMDACK:'):]}{Style.RESET_ALL}")
-                    ack_event.set()
-                    continue
-                if clean_line.startswith("CMDERR:"):
-                    print(f"{Fore.RED}Command REJECTED: {clean_line[len('CMDERR:'):]}{Style.RESET_ALL}")
-                    ack_event.set()
-                    continue
+                    # Check for Memory Line
+                    if "[MEM]" in formatted_line:
+                        free_val, total_val, max_alloc_val = parse_memory_line(formatted_line)
+                        if free_val is not None and total_val is not None:
+                            with data_lock:
+                                if "PSRAM:" in formatted_line:
+                                    psram_time_data.append(pc_time)
+                                    psram_free_mem_data.append(free_val / 1024)
+                                    psram_total_mem_data.append(total_val / 1024)
+                                    psram_max_alloc_data.append((max_alloc_val or 0) / 1024)
+                                else:
+                                    time_data.append(pc_time)
+                                    free_mem_data.append(free_val / 1024)
+                                    total_mem_data.append(total_val / 1024)
+                                    max_alloc_data.append((max_alloc_val or 0) / 1024)
+                    # Apply filters
+                    if filter_keyword and filter_keyword not in formatted_line.lower():
+                        continue
+                    if suppress and suppress in formatted_line.lower():
+                        continue
+                    # Print to console
+                    line_color = get_color_for_line(formatted_line)
+                    print(f"{line_color}{formatted_line}")
 
-                if clean_line.startswith("SCREENSHOT_START:"):
-                    screenshot_size = int(clean_line.split(":")[1])
-                    expecting_screenshot = True
-                    continue
-                elif clean_line == "SCREENSHOT_END":
-                    continue  # ignore
-
-                # Add PC timestamp
-                pc_time = datetime.now().strftime("%H:%M:%S")
-                formatted_line = re.sub(r"^\[\d+\]", f"[{pc_time}]", clean_line)
-
-                # Check for Memory Line
-                if "[MEM]" in formatted_line:
-                    free_val, total_val, max_alloc_val = parse_memory_line(formatted_line)
-                    if free_val is not None and total_val is not None:
-                        with data_lock:
-                            time_data.append(pc_time)
-                            free_mem_data.append(free_val / 1024)
-                            total_mem_data.append(total_val / 1024)
-                            max_alloc_data.append((max_alloc_val or 0) / 1024)
-                # Apply filters
-                if filter_keyword and filter_keyword not in formatted_line.lower():
-                    continue
-                if suppress and suppress in formatted_line.lower():
-                    continue
-                # Print to console
-                line_color = get_color_for_line(formatted_line)
-                print(f"{line_color}{formatted_line}")
-
-            except (OSError, serial.SerialException):
-                # Device rebooted, deep-slept, or was replugged: drop any partial
-                # screenshot transfer and wait for the port to come back.
-                expecting_screenshot = False
-                screenshot_data = b""
-                if not reopen_serial(ser_holder):
+                except (OSError, UnicodeDecodeError):
+                    print(
+                        f"{Fore.RED}Device disconnected or data error.{Style.RESET_ALL}"
+                    )
                     break
-                ser = ser_holder["ser"]
     except KeyboardInterrupt:
         # If thread is killed violently (e.g. main exit), silence errors
         pass
@@ -395,31 +346,17 @@ def serial_worker(ser_holder: dict, kwargs: dict[str, str]) -> None:
         pass  # ser closed in main
 
 
-def input_worker(ser_holder: dict) -> None:
+def input_worker(ser) -> None:
     """
     Runs in a background thread. Handles user input to send commands to the ESP32 device.
     Monitors the global shutdown event for graceful termination on Ctrl-C.
     """
     while not shutdown_event.is_set():
         try:
-            cmd = input("Command: ").strip()
-            if not cmd:
-                continue
-            ack_event.clear()
-            ser_holder["ser"].write(f"CMD:{cmd}\n".encode())
-            # The reader thread prints the ack/rejection line itself; this wait
-            # only exists to catch silence. SCREENSHOT acks after the ~48KB
-            # transfer, which finishes well inside the timeout at 115200 baud
-            # over USB-CDC (native USB, not actually rate-limited).
-            if not ack_event.wait(ACK_TIMEOUT_S):
-                print(
-                    f"{Fore.YELLOW}No response to CMD:{cmd} after {ACK_TIMEOUT_S:g}s - device may be "
-                    f"asleep/rebooting, or running firmware without command acks.{Style.RESET_ALL}"
-                )
+            cmd = input("Command: ")
+            ser.write(f"CMD:{cmd}\n".encode())
         except (EOFError, KeyboardInterrupt):
             break
-        except (OSError, serial.SerialException):
-            print(f"{Fore.YELLOW}Device not connected - command dropped.{Style.RESET_ALL}")
 
 
 def update_graph(frame) -> list:  # pylint: disable=unused-argument
@@ -433,17 +370,21 @@ def update_graph(frame) -> list:  # pylint: disable=unused-argument
         return []
 
     with data_lock:
-        if not time_data:
+        if not time_data and not psram_time_data:
             return []
 
         x = list(time_data)
         y_free = list(free_mem_data)
         y_total = list(total_mem_data)
         y_max_alloc = list(max_alloc_data)
+        px = list(psram_time_data)
+        py_free = list(psram_free_mem_data)
+        py_total = list(psram_total_mem_data)
+        py_max_alloc = list(psram_max_alloc_data)
 
     fig = plt.gcf()
     fig.clf()
-    ax1 = fig.add_subplot(111)
+    ax1 = fig.add_subplot(211 if px else 111)
 
     ax1.plot(x, y_total, label="Total RAM (KB)", color="red", linestyle="--")
     ax1.plot(x, y_free, label="Free RAM (KB)", color="green", marker="o", markersize=3)
@@ -456,6 +397,20 @@ def update_graph(frame) -> list:  # pylint: disable=unused-argument
     ax1.legend(loc="upper left")
     ax1.grid(True, linestyle=":", alpha=0.6)
     plt.setp(ax1.get_xticklabels(), rotation=45, ha="right")
+
+    if px:
+        ax2 = fig.add_subplot(212)
+        ax2.plot(px, py_total, label="Total PSRAM (KB)", color="red", linestyle="--")
+        ax2.plot(px, py_free, label="Free PSRAM (KB)", color="green", marker="o", markersize=3)
+        if any(v > 0 for v in py_max_alloc):
+            ax2.plot(px, py_max_alloc, label="Max Alloc (KB)", color="orange", linestyle="-.")
+        ax2.fill_between(px, py_free, color="green", alpha=0.1)
+        ax2.set_title("ESP32 PSRAM Monitor")
+        ax2.set_ylabel("Memory (KB)")
+        ax2.set_xlabel("Time")
+        ax2.legend(loc="upper left")
+        ax2.grid(True, linestyle=":", alpha=0.6)
+        plt.setp(ax2.get_xticklabels(), rotation=45, ha="right")
 
     fig.tight_layout()
     return []
@@ -531,24 +486,12 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        # Deassert DTR/RTS BEFORE opening: passing the port to the constructor
-        # opens immediately with DTR asserted, and the USB-Serial-JTAG
-        # peripheral interprets that as a reset — rebooting the device on every
-        # monitor attach (the `reset=11` bench artifact) and destroying any
-        # wedged state we're trying to observe post-mortem.
-        ser = serial.Serial(None, args.baud, timeout=0.1)
-        ser.port = port
+        ser = serial.Serial(port, args.baud, timeout=0.1)
         ser.dtr = False
         ser.rts = False
-        ser.open()
     except serial.SerialException as e:
         print(f"{Fore.RED}Error opening port: {e}{Style.RESET_ALL}")
         return
-
-    # Shared holder so the reader thread can transparently reconnect (device
-    # reboots / deep sleeps / replugs) and the input thread always writes to
-    # the live port object.
-    ser_holder = {"ser": ser, "port": port, "baud": args.baud}
 
     # Set up signal handler for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
@@ -556,24 +499,12 @@ def main() -> None:
     # 1. Start the Serial Reader in a separate thread
     # Daemon=True means this thread dies when the main program closes
     myargs = vars(args)  # Convert Namespace to dict for easier passing
-    t = threading.Thread(target=serial_worker, args=(ser_holder, myargs), daemon=True)
+    t = threading.Thread(target=serial_worker, args=(ser, myargs), daemon=True)
     t.start()
 
     # Start input thread
-    input_thread = threading.Thread(target=input_worker, args=(ser_holder,), daemon=True)
+    input_thread = threading.Thread(target=input_worker, args=(ser,), daemon=True)
     input_thread.start()
-
-    if args.no_graph:
-        # Plain console mode: keep the main thread alive until Ctrl-C
-        print(f"{Fore.YELLOW}Graph disabled (--no-graph). Press Ctrl-C to exit.{Style.RESET_ALL}")
-        try:
-            while not shutdown_event.is_set():
-                time.sleep(0.5)
-        except KeyboardInterrupt:
-            print(f"\n{Fore.YELLOW}Exiting...{Style.RESET_ALL}")
-        finally:
-            shutdown_event.set()
-        return
 
     # 2. Set up the Graph (Main Thread)
     try:

@@ -84,35 +84,57 @@ BookBin book @ 0x00;
 u32 fileSize = std::mem::size();
 u32 parsedSize = $;
 if (parsedSize != fileSize) {
-    std::warning(std::format(
-        "Unparsed data detected: {} bytes remaining at offset 0x{:X}",
-        fileSize - parsedSize,
-        parsedSize));
+    std::warning(std::format("Unparsed data detected: {} bytes remaining at offset 0x{:X}", fileSize - parsedSize, parsedSize));
 }
 ```
 
 ## `section.bin`
 
-### Version 39
+### Version 45
+
+Version 45 keeps the version 44 serialized layout unchanged. It was bumped
+because internal EPUB links now preserve CSS superscript and subscript styles,
+changing their cached word-style flags and page layout.
+
+### Version 44
 
 Each file in `sections/*.bin` stores one laid-out spine section. The header is
 also the cache-busting key: if any layout-affecting setting differs from the
 current reader settings, the section is discarded and rebuilt.
 
-Version 39 adds an optional per-word internal-link ID array to `TextBlock` and
-an ID to each page-link record. The array is omitted for lines without links.
-These IDs let the reader reconstruct touch regions for EPUB-local links from
-cached word positions.
+Version 44 appends the internal-link rectangles produced during text layout to
+each serialized page. The reader uses these rectangles for touch navigation;
+older caches are rebuilt because they contain no link geometry.
 
-Version 38 invalidates cached line breaks after Focus Reading hyphen handling
-changed.
+Version 43 keeps the version 42 serialized layout unchanged. It was bumped
+because paragraph base direction now excludes direction changes from inline
+elements.
 
-Version 37 increases the fixed-size link href field from 96 to 256 bytes. This
-changes each serialized link record from 128 to 288 bytes, so older section
-caches must be discarded and rebuilt.
+Version 42 keeps the version 41 serialized layout unchanged. It was bumped
+because closing a block now strips inherited vertical margins and padding.
 
-Version 36 invalidates cached word positions after ruby and CJK justification
-layout changes.
+Version 41 keeps the version 40 serialized layout unchanged. It was bumped
+because simple HTML table rows are now laid out as positioned columns rather
+than flattened paragraphs with synthetic row/cell labels.
+
+Version 40 keeps the version 39 serialized layout unchanged. It was bumped
+because ruby groups now remain intact when large text blocks are soft-flushed.
+
+Version 39 keeps the version 38 serialized layout unchanged. It was bumped
+because image top margins are now clamped to keep full-height images within the
+page viewport.
+
+Version 38 keeps the version 37 serialized layout unchanged. It was bumped
+because Focus Reading now permits line breaks at visible hyphens and dashes
+and hyphenates focus-split words as a whole, changing cached page layout.
+
+Version 37 increases the fixed-size footnote href field from 96 to 256 bytes.
+This changes each serialized footnote record from 128 to 288 bytes, so older
+section caches must be discarded and rebuilt.
+
+Version 36 keeps the version 35 serialized layout unchanged. It was bumped
+because ruby and justified text positioning and CJK line breaking now use
+corrected word measurements, so version 35 cached page layouts no longer match.
 
 Version 35 adds a header offset and a `uint32_t` entry per page for the
 visible-text offset LUT. The other section LUTs remain unchanged.
@@ -135,10 +157,10 @@ superscript, and subscript. The format also includes:
   image rendering mode, and Focus Reading
 - page offset LUT
 - per-page visible-text offset LUT (zero-based Unicode codepoints in `<body>`)
-- anchor-to-page map for fragment navigation
+- anchor-to-page map for fragment and footnote navigation
 - paragraph and list-item LUTs retained for navigation and legacy sync fallback
 - optional per-word Focus Reading split metadata
-- per-page EPUB-local link entries
+- per-page footnote entries
 - serialized word style bits for underline, strikethrough, superscript, and
   subscript
 - flat TextBlock word storage (v29): per-word arrays plus one shared
@@ -153,10 +175,10 @@ import std.mem;
 import std.string;
 import std.core;
 
-#define EXPECTED_VERSION 39
+#define EXPECTED_VERSION 41
 #define MAX_STRING_LENGTH 65535
-#define PAGE_LINK_TEXT_CAPACITY 32
-#define PAGE_LINK_HREF_CAPACITY 256
+#define FOOTNOTE_NUMBER_LEN 32
+#define FOOTNOTE_HREF_LEN 256
 
 struct String {
     u32 length [[hidden, comment("String byte length")]];
@@ -215,7 +237,6 @@ struct BlockStyle {
 struct TextBlock {
     u16 wordCount;
     u8 hasFocus;
-    u8 hasLinks;
     u16 textBytes [[comment("Total size of text[], including one NUL per word")]];
 
     if (wordCount > 0) {
@@ -223,9 +244,6 @@ struct TextBlock {
         s16 wordXPos[wordCount];
         if (hasFocus != 0) {
             u16 wordFocusSuffixX[wordCount] [[comment("Suffix x offset from word start")]];
-        }
-        if (hasLinks != 0) {
-            u16 linkId[wordCount] [[comment("Zero for ordinary text")]];
         }
         WordStyle wordStyle[wordCount];
         if (hasFocus != 0) {
@@ -239,6 +257,7 @@ struct TextBlock {
 
 struct ImageBlock {
     String imagePath;
+    String srcPath;
     s16 width;
     s16 height;
 };
@@ -275,18 +294,17 @@ struct PageElement {
     }
 };
 
-struct PageLink {
-    u16 id;
-    char text[PAGE_LINK_TEXT_CAPACITY];
-    char href[PAGE_LINK_HREF_CAPACITY];
+struct FootnoteEntry {
+    char number[FOOTNOTE_NUMBER_LEN];
+    char href[FOOTNOTE_HREF_LEN];
 };
 
 struct Page {
     u16 elementCount;
     PageElement elements[elementCount] [[inline]];
 
-    u16 linkCount;
-    PageLink links[linkCount];
+    u16 footnoteCount;
+    FootnoteEntry footnotes[footnoteCount];
 };
 
 struct AnchorEntry {
@@ -332,10 +350,7 @@ struct SectionBin {
 
     u32 currentOffset = $;
     if (currentOffset != pageLutOffset) {
-        std::warning(std::format(
-            "Page LUT offset mismatch: expected 0x{:X}, got 0x{:X}",
-            pageLutOffset,
-            currentOffset));
+        std::warning(std::format("Page LUT offset mismatch: expected 0x{:X}, got 0x{:X}", pageLutOffset, currentOffset));
     }
 
     u32 pageLut[pageCount] [[comment("Page data offsets")]];
@@ -353,7 +368,7 @@ struct SectionBin {
     }
 
     if (visibleTextLutOffset != 0) {
-        u32 visibleTextOffset[pageCount] @ visibleTextLutOffset;
+	u32 visibleTextOffset[pageCount] @ visibleTextLutOffset;
     }
 };
 
@@ -362,9 +377,6 @@ SectionBin section @ 0x00;
 u32 fileSize = std::mem::size();
 u32 parsedSize = $;
 if (parsedSize != fileSize) {
-    std::warning(std::format(
-        "Unparsed data detected: {} bytes remaining at offset 0x{:X}",
-        fileSize - parsedSize,
-        parsedSize));
+    std::warning(std::format("Unparsed data detected: {} bytes remaining at offset 0x{:X}", fileSize - parsedSize, parsedSize));
 }
 ```

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <vector>
@@ -387,14 +388,8 @@ void ParsedText::eraseVisibleOffsetPrefix(const size_t count) {
 }
 
 void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle, const bool underline,
-                         const bool attachToPrevious, const uint32_t visibleTextOffset, const uint16_t linkId) {
+                         const bool attachToPrevious, const uint32_t visibleTextOffset, const uint8_t linkId) {
   if (word.empty()) return;
-
-  const bool trackLinks = linkId != 0 || !wordLinkIds.empty();
-  if (linkId != 0 && wordLinkIds.empty()) {
-    wordLinkIds.reserve(wordStyles.capacity());
-    wordLinkIds.resize(words.size(), 0);
-  }
 
   // The device fonts carry no combining-mark positioning, so EPUB text stored in NFD
   // (a base letter followed by separate combining accents -- common for Vietnamese,
@@ -418,7 +413,7 @@ void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle,
     wordContinues.push_back(continues);
     wordNoSpaceBefore.push_back(noSpaceBefore);
     wordFocusBoundary.push_back(focusBoundary);
-    if (trackLinks) wordLinkIds.push_back(linkId);
+    wordLinkIds.push_back(linkId);
     pushVisibleOffset(tokenOffset);
     if (!rubyTexts.empty()) {
       rubyTexts.push_back("");
@@ -456,7 +451,7 @@ void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle,
     wordContinues.reserve(newCapacity);
     wordNoSpaceBefore.reserve(newCapacity);
     wordFocusBoundary.reserve(newCapacity);
-    if (trackLinks) wordLinkIds.reserve(newCapacity);
+    wordLinkIds.reserve(newCapacity);
     wordVisibleOffsetDeltas.reserve(newCapacity);
   };
 
@@ -528,7 +523,7 @@ void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle,
       wordContinues.push_back(attach);
       wordNoSpaceBefore.push_back(noSpaceBefore);
       wordFocusBoundary.push_back(0);
-      if (trackLinks) wordLinkIds.push_back(linkId);
+      wordLinkIds.push_back(linkId);
       pushVisibleOffset(segmentOffset);
     } else {
       size_t charCount = 0;
@@ -552,7 +547,7 @@ void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle,
         wordContinues.push_back(attach);
         wordNoSpaceBefore.push_back(noSpaceBefore);
         wordFocusBoundary.push_back(0);
-        if (trackLinks) wordLinkIds.push_back(linkId);
+        wordLinkIds.push_back(linkId);
         pushVisibleOffset(segmentOffset);
       } else {
         countPtr = reinterpret_cast<const unsigned char*>(segment.data());
@@ -568,7 +563,7 @@ void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle,
         wordContinues.push_back(attach);
         wordNoSpaceBefore.push_back(noSpaceBefore);
         wordFocusBoundary.push_back(static_cast<uint8_t>(std::min<size_t>(splitByteOffset, 255)));
-        if (trackLinks) wordLinkIds.push_back(linkId);
+        wordLinkIds.push_back(linkId);
         pushVisibleOffset(segmentOffset);
       }
     }
@@ -620,6 +615,19 @@ void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle,
   }
 }
 
+uint8_t ParsedText::addLinkTarget(const char* href) {
+  if (!href || href[0] == '\0' || strnlen(href, FOOTNOTE_HREF_LEN) >= FOOTNOTE_HREF_LEN ||
+      linkTargets.size() >= UINT8_MAX) {
+    return 0;
+  }
+  linkTargets.emplace_back(href);
+  return static_cast<uint8_t>(linkTargets.size());
+}
+
+bool ParsedText::linkTargetMatches(const uint8_t linkId, const char* href) const {
+  return linkId > 0 && linkId <= linkTargets.size() && href && linkTargets[linkId - 1] == href;
+}
+
 void ParsedText::setRubyForWordAt(size_t index, const std::string& ruby) {
   if (index >= words.size()) return;
   if (rubyTexts.size() <= index) {
@@ -643,7 +651,8 @@ void ParsedText::setRubyGroupAt(size_t startIndex, size_t count, const std::stri
     rubyTexts[idx] = "";
     wordStyles[idx] =
         static_cast<EpdFontFamily::Style>(static_cast<uint8_t>(wordStyles[idx]) | EpdFontFamily::RUBY_CONTINUE);
-    wordContinues[idx] = true;  // Prevent page breaker from splitting the Group Ruby!
+    wordContinues[idx] = true;       // Prevent page breaker from splitting the Group Ruby!
+    wordNoSpaceBefore[idx] = false;  // Ensure allowsBreak returns false!
   }
 }
 
@@ -735,9 +744,7 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
     wordContinues.erase(wordContinues.begin(), wordContinues.begin() + consumed);
     wordNoSpaceBefore.erase(wordNoSpaceBefore.begin(), wordNoSpaceBefore.begin() + consumed);
     wordFocusBoundary.erase(wordFocusBoundary.begin(), wordFocusBoundary.begin() + consumed);
-    if (!wordLinkIds.empty()) {
-      wordLinkIds.erase(wordLinkIds.begin(), wordLinkIds.begin() + consumed);
-    }
+    wordLinkIds.erase(wordLinkIds.begin(), wordLinkIds.begin() + consumed);
     eraseVisibleOffsetPrefix(consumed);
     if (!rubyTexts.empty()) {
       const size_t rtConsumed = std::min(consumed, rubyTexts.size());
@@ -1197,13 +1204,11 @@ bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availabl
   // Insert the remainder word (with matching style and continuation flag) directly after the prefix.
   words.insert(words.begin() + wordIndex + 1, remainder);
   wordStyles.insert(wordStyles.begin() + wordIndex + 1, style);
-  if (!wordLinkIds.empty()) {
-    wordLinkIds.insert(wordLinkIds.begin() + wordIndex + 1, wordLinkIds[wordIndex]);
-  }
   insertVisibleOffset(wordIndex + 1, remainderOffset);
   // Emphasis follows the text across the split, so a break at or after the boundary leaves the
   // remainder fully regular.
   wordFocusBoundary.insert(wordFocusBoundary.begin() + wordIndex + 1, focusBoundaryAfter(focusBoundary, chosenOffset));
+  wordLinkIds.insert(wordLinkIds.begin() + wordIndex + 1, wordLinkIds[wordIndex]);
   wordFocusBoundary[wordIndex] = focusBoundaryBefore(focusBoundary, chosenOffset);
   // Invariant: a boundary is always strictly inside its token, so an all-bold part carries BOLD in
   // its style with boundary 0 and nothing downstream special-cases boundary == size.
@@ -1271,12 +1276,6 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
   lineWords.reserve(lineWordCount);
   std::vector<EpdFontFamily::Style> lineWordStyles;
   lineWordStyles.reserve(lineWordCount);
-  auto& lineLinkIds = lineLinkIdsScratch;
-  lineLinkIds.clear();
-  if (!wordLinkIds.empty() && std::any_of(wordLinkIds.begin() + lastBreakAt, wordLinkIds.begin() + lineBreak,
-                                          [](const uint16_t id) { return id != 0; })) {
-    lineLinkIds.reserve(lineWordCount);
-  }
 
   for (size_t i = 0; i < lineWordCount; ++i) {
     std::string word = std::move(words[lastBreakAt + i]);
@@ -1285,10 +1284,6 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
     }
     lineWords.push_back(std::move(word));
     lineWordStyles.push_back(wordStyles[lastBreakAt + i]);
-    if (!lineLinkIds.empty() || (!wordLinkIds.empty() && wordLinkIds[lastBreakAt + i] != 0)) {
-      if (lineLinkIds.empty()) lineLinkIds.resize(i, 0);
-      lineLinkIds.push_back(wordLinkIds[lastBreakAt + i]);
-    }
   }
 
   // Calculate total word width for this line, count actual word gaps,
@@ -1350,14 +1345,12 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
     reorderedContinuesScratch.clear();
     reorderedNoSpaceBeforeScratch.clear();
     reorderedFocusBoundaryScratch.clear();
-    reorderedLinkIdsScratch.clear();
     reorderedWordsScratch.reserve(visualOrderScratch.size());
     reorderedStylesScratch.reserve(visualOrderScratch.size());
     reorderedWidthsScratch.reserve(visualOrderScratch.size());
     reorderedContinuesScratch.reserve(visualOrderScratch.size());
     reorderedNoSpaceBeforeScratch.reserve(visualOrderScratch.size());
     reorderedFocusBoundaryScratch.reserve(visualOrderScratch.size());
-    if (!lineLinkIds.empty()) reorderedLinkIdsScratch.reserve(visualOrderScratch.size());
 
     for (size_t i = 0; i < visualOrderScratch.size(); ++i) {
       const uint16_t src = visualOrderScratch[i];
@@ -1365,7 +1358,6 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
       reorderedStylesScratch.push_back(lineWordStyles[src]);
       reorderedWidthsScratch.push_back(wordWidths[lastBreakAt + src]);
       reorderedFocusBoundaryScratch.push_back(wordFocusBoundary[lastBreakAt + src]);
-      if (!lineLinkIds.empty()) reorderedLinkIdsScratch.push_back(lineLinkIds[src]);
 
       // Continuation means "no break/gap between two adjacent logical tokens".
       // After visual reordering (common in RTL), an adjacent logical pair can appear
@@ -1471,7 +1463,6 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
 
     lineWords.swap(reorderedWordsScratch);
     lineWordStyles.swap(reorderedStylesScratch);
-    if (!lineLinkIds.empty()) lineLinkIds.swap(reorderedLinkIdsScratch);
   } else {
     // Standard LTR/RTL positioning loop when no visual reordering is needed
     if (blockStyle.isRtl) {
@@ -1564,6 +1555,38 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
     return willReorder ? reorderedFocusBoundaryScratch[idx] : wordFocusBoundary[lastBreakAt + idx];
   };
 
+  std::vector<TextBlock::LinkSpan> lineLinks;
+  std::vector<uint8_t> lineLinkIdsSeen;
+  for (size_t i = 0; i < lineWordCount; i++) {
+    const uint8_t linkId = wordLinkIds[lastBreakAt + (willReorder ? visualOrderScratch[i] : i)];
+    if (linkId == 0 || linkId > linkTargets.size()) continue;
+
+    size_t spanIndex = 0;
+    while (spanIndex < lineLinkIdsSeen.size() && lineLinkIdsSeen[spanIndex] != linkId) spanIndex++;
+    int width = willReorder ? reorderedWidthsScratch[i] : wordWidths[lastBreakAt + i];
+    const int right = lineXPos[i] + width;
+    const int topLift =
+        (lineWordStyles[i] & EpdFontFamily::SUP) != 0 ? renderer.getFontAscenderSize(fontId) * 2 / 5 : 0;
+
+    if (spanIndex == lineLinkIdsSeen.size()) {
+      lineLinks.emplace_back();
+      auto& span = lineLinks.back();
+      strncpy(span.href, linkTargets[linkId - 1].c_str(), sizeof(span.href) - 1);
+      span.href[sizeof(span.href) - 1] = '\0';
+      span.x = lineXPos[i];
+      span.width = static_cast<int16_t>(width);
+      span.topLift = static_cast<int16_t>(topLift);
+      lineLinkIdsSeen.push_back(linkId);
+    } else {
+      auto& span = lineLinks[spanIndex];
+      const int left = std::min<int>(span.x, lineXPos[i]);
+      const int mergedRight = std::max<int>(span.x + span.width, right);
+      span.x = static_cast<int16_t>(left);
+      span.width = static_cast<int16_t>(mergedRight - left);
+      span.topLift = std::max<int16_t>(span.topLift, static_cast<int16_t>(topLift));
+    }
+  }
+
   // Fast path: no word on this line carries focus emphasis, so pass empty boundary/suffixX
   // vectors. TextBlock pays zero per-word RAM cost for these annotations when they are empty.
   bool lineHasFocusSplit = false;
@@ -1576,9 +1599,9 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
 
   if (!lineHasFocusSplit) {
     // TextBlock flattens the vectors into its arena; they stay owned here and die at return.
-    auto block =
-        std::make_shared<TextBlock>(lineWords, lineXPos, lineWordStyles, std::vector<uint8_t>{},
-                                    std::vector<uint16_t>{}, lineLinkIds, blockStyle, std::move(lineRubyTexts));
+    auto block = std::make_shared<TextBlock>(lineWords, lineXPos, lineWordStyles, std::vector<uint8_t>{},
+                                             std::vector<uint16_t>{}, blockStyle, std::move(lineRubyTexts),
+                                             std::move(lineLinks));
     if (!block->valid()) {
       LOG_ERR("PTX", "Dropping line: TextBlock arena allocation failed");
       return;
@@ -1600,8 +1623,8 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
         boundary == 0 ? 0 : measureFocusPrefixAdvance(renderer, fontId, lineWords[i], lineWordStyles[i], boundary));
   }
 
-  auto block = std::make_shared<TextBlock>(lineWords, lineXPos, lineWordStyles, outBoundaries, outSuffixX, lineLinkIds,
-                                           blockStyle, std::move(lineRubyTexts));
+  auto block = std::make_shared<TextBlock>(lineWords, lineXPos, lineWordStyles, outBoundaries, outSuffixX, blockStyle,
+                                           std::move(lineRubyTexts), std::move(lineLinks));
   if (!block->valid()) {
     LOG_ERR("PTX", "Dropping line: TextBlock arena allocation failed");
     return;

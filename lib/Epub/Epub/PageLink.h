@@ -1,33 +1,24 @@
 #pragma once
 
-#include <cstddef>
+#include <algorithm>
 #include <cstdint>
 
-struct LinkHitRect {
-  int16_t x;
-  int16_t y;
-  int16_t width;
-  int16_t height;
-};
+#include "FootnoteEntry.h"
 
-struct PageLinkHitRegions {
-  static constexpr uint8_t MAX_RECTS = 8;
-
-  uint8_t linkIndex;
-  uint8_t rectCount;
-  LinkHitRect rects[MAX_RECTS];
-};
-
+// One laid-out internal EPUB link. Coordinates are relative to the page origin;
+// the reader adds its oriented margins when hit-testing the displayed page.
 struct PageLink {
-  static constexpr size_t TEXT_CAPACITY = 32;
-  static constexpr size_t HREF_CAPACITY = 256;
-  static constexpr uint8_t MAX_PER_PAGE = 16;
+  char href[FOOTNOTE_HREF_LEN];
+  int16_t x = 0;
+  int16_t y = 0;
+  int16_t width = 0;
+  int16_t height = 0;
 
-  // The short text shown for this link. HREF_CAPACITY accommodates long,
-  // URL-encoded Calibre-generated filenames.
-  char text[TEXT_CAPACITY];
-  char href[HREF_CAPACITY];
-  uint16_t id;
+  PageLink() { href[0] = '\0'; }
 
-  PageLink() : text{}, href{}, id(0) {}
+  bool contains(const int pageX, const int pageY, const int slop, const int minWidth) const {
+    const int horizontalSlop = std::max(slop, (minWidth - width) / 2);
+    return pageX >= x - horizontalSlop && pageX < x + width + horizontalSlop && pageY >= y - slop &&
+           pageY < y + height + slop;
+  }
 };

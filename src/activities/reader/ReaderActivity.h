@@ -52,7 +52,9 @@ class ReaderActivity : public Activity {
   virtual int longPressSkipAmount() const { return 10; }
   virtual bool applyReaderOrientation(uint8_t orientation) { return false; }
 
-  bool handleBackNavigation(bool backReleased, unsigned long heldMs);
+  bool handleBackNavigation(bool backTriggered, unsigned long heldMs);
+  /** True while the end-of-book suggestion menu is on screen and owning input. */
+  bool endOfBookMenuActive() const;
   bool handleEndOfBookMenu(bool suppressConfirmRelease = false);
   bool handleEndOfBookPageTurn(bool prevTriggered, bool nextTriggered);
   void clearEndOfBookOptionsIfNeeded();

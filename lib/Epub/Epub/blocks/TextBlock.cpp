@@ -10,15 +10,11 @@
 
 #include "../../../../src/fontIds.h"
 
-size_t TextBlock::arenaSize(const uint16_t wordCount, const bool hasFocus, const bool hasLinks,
-                            const uint16_t textBytes) {
+size_t TextBlock::arenaSize(const uint16_t wordCount, const bool hasFocus, const uint16_t textBytes) {
   // Layout documented in TextBlock.h: 16-bit arrays first, then 8-bit arrays, then text.
   size_t size = static_cast<size_t>(wordCount) * (sizeof(uint16_t) + sizeof(int16_t) + sizeof(uint8_t));
   if (hasFocus) {
     size += static_cast<size_t>(wordCount) * (sizeof(uint16_t) + sizeof(uint8_t));
-  }
-  if (hasLinks) {
-    size += static_cast<size_t>(wordCount) * sizeof(uint16_t);
   }
   return size + textBytes;
 }
@@ -33,10 +29,6 @@ void TextBlock::bindArenaPointers() {
     focusSuffixXArr = reinterpret_cast<const uint16_t*>(base + off);
     off += wc * 2;
   }
-  if (linksPresent) {
-    linkIdArr = reinterpret_cast<const uint16_t*>(base + off);
-    off += wc * 2;
-  }
   stylesArr = base + off;
   off += wc;
   if (focusPresent) {
@@ -48,9 +40,9 @@ void TextBlock::bindArenaPointers() {
 
 TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<int16_t>& wordXpos,
                      const std::vector<EpdFontFamily::Style>& wordStyles, const std::vector<uint8_t>& focusBoundary,
-                     const std::vector<uint16_t>& focusSuffixX, const std::vector<uint16_t>& linkIds,
-                     const BlockStyle& blockStyle, std::vector<std::string> rubyTexts)
-    : blockStyle(blockStyle), rubyTexts(std::move(rubyTexts)) {
+                     const std::vector<uint16_t>& focusSuffixX, const BlockStyle& blockStyle,
+                     std::vector<std::string> rubyTexts, std::vector<LinkSpan> linkSpans)
+    : blockStyle(blockStyle), rubyTexts(std::move(rubyTexts)), linkSpans(std::move(linkSpans)) {
   // Same invariant as deserialize(): a block never holds an all-empty rubyTexts, so a
   // ruby-less line costs nothing beyond its arena. The layout engine hands one over for
   // every line it extracts, ruby or not; release it here rather than carrying it for the
@@ -62,22 +54,18 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
   // Focus annotations are optional: empty vectors mean no word in this block has a split.
   // When present, they must be sized in lockstep with words[].
   const bool hasFocus = !focusBoundary.empty();
-  const bool hasLinks = !linkIds.empty();
   if (words.size() != wordXpos.size() || words.size() != wordStyles.size() || words.size() > 10000 ||
-      (hasFocus && (words.size() != focusBoundary.size() || words.size() != focusSuffixX.size())) ||
-      (hasLinks && words.size() != linkIds.size())) {
-    LOG_ERR("TXB",
-            "Construction failed: size mismatch (words=%u, xpos=%u, styles=%u, boundary=%u, suffixX=%u, links=%u)",
+      (hasFocus && (words.size() != focusBoundary.size() || words.size() != focusSuffixX.size()))) {
+    LOG_ERR("TXB", "Construction failed: size mismatch (words=%u, xpos=%u, styles=%u, boundary=%u, suffixX=%u)",
             static_cast<uint32_t>(words.size()), static_cast<uint32_t>(wordXpos.size()),
             static_cast<uint32_t>(wordStyles.size()), static_cast<uint32_t>(focusBoundary.size()),
-            static_cast<uint32_t>(focusSuffixX.size()), static_cast<uint32_t>(linkIds.size()));
+            static_cast<uint32_t>(focusSuffixX.size()));
     isValid = false;
     return;
   }
 
   numWords = static_cast<uint16_t>(words.size());
   focusPresent = hasFocus;
-  linksPresent = hasLinks;
   if (numWords == 0) {
     return;  // valid empty block, no arena
   }
@@ -95,14 +83,13 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
   }
   textBytes = static_cast<uint16_t>(totalText);
 
-  const size_t size = arenaSize(numWords, focusPresent, linksPresent, textBytes);
+  const size_t size = arenaSize(numWords, focusPresent, textBytes);
   arena = makeUniqueNoThrow<uint8_t[]>(size);
   if (!arena) {
     LOG_ERR("TXB", "OOM: arena %u bytes", static_cast<uint32_t>(size));
     numWords = 0;
     textBytes = 0;
     focusPresent = false;
-    linksPresent = false;
     isValid = false;
     return;
   }
@@ -130,12 +117,6 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
       boundary[i] = focusBoundary[i];
     }
   }
-  if (linksPresent) {
-    auto* ids = const_cast<uint16_t*>(linkIdArr);
-    for (uint16_t i = 0; i < numWords; i++) {
-      ids[i] = linkIds[i];
-    }
-  }
 }
 
 bool TextBlock::hasRuby() const {
@@ -143,15 +124,6 @@ bool TextBlock::hasRuby() const {
     if (!rt.empty()) return true;
   }
   return false;
-}
-
-int TextBlock::renderedWordAdvance(const GfxRenderer& renderer, const int fontId, const uint16_t i) const {
-  if (i >= numWords) return 0;
-  const uint8_t boundary = focusBoundary(i);
-  if (boundary == 0 || boundary >= wordTextLen(i)) {
-    return renderer.getTextAdvanceX(fontId, wordText(i), wordStyle(i));
-  }
-  return focusSuffixX(i) + renderer.getTextAdvanceX(fontId, wordText(i) + boundary, wordStyle(i));
 }
 
 void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int x, const int y) const {
@@ -337,10 +309,9 @@ bool TextBlock::serialize(HalFile& file) const {
   // per-word arrays and the text blob.
   serialization::writePod(file, numWords);
   serialization::writePod(file, static_cast<uint8_t>(focusPresent ? 1 : 0));
-  serialization::writePod(file, static_cast<uint8_t>(linksPresent ? 1 : 0));
   serialization::writePod(file, textBytes);
   if (numWords > 0) {
-    const size_t size = arenaSize(numWords, focusPresent, linksPresent, textBytes);
+    const size_t size = arenaSize(numWords, focusPresent, textBytes);
     if (file.write(arena.get(), size) != size) {
       LOG_ERR("TXB", "Serialization failed: arena write (%u bytes)", static_cast<uint32_t>(size));
       return false;
@@ -374,11 +345,9 @@ bool TextBlock::serialize(HalFile& file) const {
 std::unique_ptr<TextBlock> TextBlock::deserialize(HalFile& file) {
   uint16_t wc;
   uint8_t hasFocus;
-  uint8_t hasLinks;
   uint16_t textBytes;
   serialization::readPod(file, wc);
   serialization::readPod(file, hasFocus);
-  serialization::readPod(file, hasLinks);
   serialization::readPod(file, textBytes);
 
   // Sanity checks: cap the arena allocation and reject impossible geometry
@@ -400,10 +369,9 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(HalFile& file) {
   block->numWords = wc;
   block->textBytes = textBytes;
   block->focusPresent = hasFocus != 0;
-  block->linksPresent = hasLinks != 0;
 
   if (wc > 0) {
-    const size_t size = arenaSize(wc, block->focusPresent, block->linksPresent, textBytes);
+    const size_t size = arenaSize(wc, block->focusPresent, textBytes);
     block->arena = makeUniqueNoThrow<uint8_t[]>(size);
     if (!block->arena) {
       LOG_ERR("TXB", "OOM: arena %u bytes", static_cast<uint32_t>(size));
