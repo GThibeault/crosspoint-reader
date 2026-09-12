@@ -237,9 +237,9 @@ void EpubReaderActivity::openReaderMenu() {
     bookProgress = epub->calculateProgress(currentSpineIndex, chapterProgress) * 100.0f;
   }
   const int bookProgressPercent = clampPercent(static_cast<int>(bookProgress + 0.5f));
-  startActivityForResult(std::make_unique<EpubReaderMenuActivity>(
-                             renderer, mappedInput, epub->getTitle(), currentPage, totalPages, bookProgressPercent,
-                             SETTINGS.orientation, !currentPageLinks.empty(), !cachedBookmarks.empty()),
+  startActivityForResult(std::make_unique<EpubReaderMenuActivity>(renderer, mappedInput, epub->getTitle(), currentPage,
+                                                                  totalPages, bookProgressPercent, SETTINGS.orientation,
+                                                                  !currentPageLinks.empty(), !cachedBookmarks.empty()),
                          [this](const ActivityResult& result) {
                            const auto& menu = std::get<MenuResult>(result.data);
                            if (SETTINGS.orientation != menu.orientation) {
@@ -266,7 +266,7 @@ void EpubReaderActivity::showBuildPopup(GfxRenderer& renderer, int& pagesUntilFu
   buildPopupPending = false;
 }
 
-void EpubReaderActivity::openDictionaryWordSelect() {
+void EpubReaderActivity::openDictionaryWordSelect(const int initialTouchX, const int initialTouchY) {
   if (SETTINGS.dictionaryName[0] == '\0') {
     showDictionaryMessage = true;
     dictionaryMessageTime = millis();
@@ -283,9 +283,13 @@ void EpubReaderActivity::openDictionaryWordSelect() {
   orientedMarginTop += SETTINGS.screenMargin;
   orientedMarginLeft += SETTINGS.screenMargin;
 
-  startActivityForResult(std::make_unique<DictionaryWordSelectActivity>(renderer, mappedInput, std::move(page),
-                                                                        orientedMarginLeft, orientedMarginTop),
-                         [this](const ActivityResult&) { requestUpdate(); });
+  auto wordSelectActivity = makeUniqueNoThrow<DictionaryWordSelectActivity>(
+      renderer, mappedInput, std::move(page), orientedMarginLeft, orientedMarginTop, initialTouchX, initialTouchY);
+  if (!wordSelectActivity) {
+    LOG_ERR("ERS", "OOM: dictionary word select activity");
+    return;
+  }
+  startActivityForResult(std::move(wordSelectActivity), [this](const ActivityResult&) { requestUpdate(); });
 }
 
 void EpubReaderActivity::loop() {
@@ -364,6 +368,15 @@ void EpubReaderActivity::loop() {
     pendingReadFolderMove = SETTINGS.moveFinishedToReadFolder && !isInReadFolder(epub->getPath());
   } else {
     pendingReadFolderMove = false;
+  }
+
+  int dictionaryTouchX = 0;
+  int dictionaryTouchY = 0;
+  if (!atEndOfBook && SETTINGS.touchReaderControls &&
+      mappedInput.wasScreenLongPress(dictionaryTouchX, dictionaryTouchY)) {
+    automaticPageTurnActive = false;
+    openDictionaryWordSelect(dictionaryTouchX, dictionaryTouchY);
+    return;
   }
 
   if (handleLinkTap()) {
@@ -496,15 +509,14 @@ void EpubReaderActivity::loop() {
       if (currentPageLinks.size() == 1) {
         navigateToHref(currentPageLinks[0].href, true);
       } else if (currentPageLinks.size() > 1) {
-        startActivityForResult(
-            std::make_unique<EpubReaderLinksActivity>(renderer, mappedInput, currentPageLinks),
-            [this](const ActivityResult& result) {
-              if (!result.isCancelled) {
-                const auto& linkResult = std::get<LinkResult>(result.data);
-                navigateToHref(linkResult.href, true);
-              }
-              requestUpdate();
-            });
+        startActivityForResult(std::make_unique<EpubReaderLinksActivity>(renderer, mappedInput, currentPageLinks),
+                               [this](const ActivityResult& result) {
+                                 if (!result.isCancelled) {
+                                   const auto& linkResult = std::get<LinkResult>(result.data);
+                                   navigateToHref(linkResult.href, true);
+                                 }
+                                 requestUpdate();
+                               });
       }
     }
     return;
@@ -1689,8 +1701,7 @@ void EpubReaderActivity::navigateBackFromLink() {
   if (linkHistoryDepth <= 0) return;
   linkHistoryDepth--;
   const auto& pos = linkHistory[linkHistoryDepth];
-  LOG_DBG("ERS", "Restoring link history [%d]: spine %d, page %d", linkHistoryDepth, pos.spineIndex,
-          pos.pageNumber);
+  LOG_DBG("ERS", "Restoring link history [%d]: spine %d, page %d", linkHistoryDepth, pos.spineIndex, pos.pageNumber);
 
   {
     RenderLock lock;

@@ -43,11 +43,22 @@ void DictionaryWordSelectActivity::onEnter() {
   Activity::onEnter();
   fontId = SETTINGS.getReaderFontId();
   lineHeight = renderer.getLineHeight(fontId);
+  extractWords();
+
+  if (isDirectLookup()) {
+    selected = wordAt(initialTouchX, initialTouchY);
+    if (selected < 0) {
+      finish();
+      return;
+    }
+    performLookup();
+    return;
+  }
+
   // No null check: a failed allocation just disables the differential
   // fast path (drawHighlightWithSnapshot skips the read), keeping the
   // full-repaint path as the fallback.
   snapshot = makeUniqueNoThrow<uint8_t[]>(SNAPSHOT_CAPACITY);
-  extractWords();
   // Start on the middle row's word nearest mid-screen instead of top-left:
   // any word on the page is then at most half a page of moves away.
   if (!words.empty()) {
@@ -177,10 +188,28 @@ void DictionaryWordSelectActivity::performLookup() {
 
   if (found) {
     popup = Popup::None;
-    startActivityForResult(
-        std::make_unique<DictionaryDefinitionActivity>(renderer, mappedInput, std::move(headword),
-                                                       std::move(definition), dict.definitionsAreHtml()),
-        [this](const ActivityResult&) { requestUpdate(); });
+    const bool htmlDefinition = dict.definitionsAreHtml();
+    if (isDirectLookup()) {
+      page.reset();
+      std::vector<WordBox>().swap(words);
+    }
+    auto definitionActivity = makeUniqueNoThrow<DictionaryDefinitionActivity>(
+        renderer, mappedInput, std::move(headword), std::move(definition), htmlDefinition);
+    if (!definitionActivity) {
+      LOG_ERR("DICT", "OOM: dictionary definition activity");
+      popup = Popup::Error;
+      popupMsg = StrId::STR_DICT_LOW_MEMORY;
+      popupTime = millis();
+      requestUpdate();
+      return;
+    }
+    startActivityForResult(std::move(definitionActivity), [this](const ActivityResult&) {
+      if (isDirectLookup()) {
+        finish();
+      } else {
+        requestUpdate();
+      }
+    });
     return;
   }
   // Name the failure: a genuine miss is "Not found"; a word that WAS found but
@@ -230,6 +259,10 @@ void DictionaryWordSelectActivity::performLookup() {
 void DictionaryWordSelectActivity::loop() {
   if (popup == Popup::NotFound || popup == Popup::Error) {
     if (millis() - popupTime >= POPUP_DURATION_MS) {
+      if (isDirectLookup()) {
+        finish();
+        return;
+      }
       popup = Popup::None;
       requestUpdate();
     }
@@ -337,6 +370,13 @@ void DictionaryWordSelectActivity::drawHints() const {
 }
 
 void DictionaryWordSelectActivity::render(RenderLock&&) {
+  if (isDirectLookup()) {
+    if (popup != Popup::None) {
+      GUI.drawPopup(renderer, I18N.get(popupMsg));
+    }
+    return;
+  }
+
   // Differential fast path: only the highlight moved and the framebuffer
   // still holds a clean page (no popup or sub-activity since the last full
   // repaint). Restore the pixels under the old highlight, draw the new one,
