@@ -7,6 +7,9 @@
 #include <driver/gpio.h>
 #include <esp_sleep.h>
 #include <soc/soc_caps.h>
+#if SOC_PM_SUPPORT_EXT1_WAKEUP
+#include <driver/rtc_io.h>
+#endif
 
 #include <cassert>
 
@@ -115,9 +118,31 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio, const bool keepRtcPeriphOn) 
   }
 #endif
 
-  // Waits for the power button to be physically released (so holding it doesn't
-  // immediately wake the device again), then arms the wake source and sleeps.
-  freeink::PowerManager::deepSleepUntilPowerButton(keepRtcPeriphOn);
+  // Wait for release before configuring the sleep pull so the button's active
+  // level cannot immediately wake the device again.
+  freeink::PowerManager::waitForPowerButtonRelease();
+  freeink::PowerManager::armPowerButtonWakeup();
+
+#if SOC_PM_SUPPORT_EXT1_WAKEUP
+  if (keepRtcPeriphOn) {
+    const int8_t powerPin = BoardConfig::ACTIVE.input.power;
+    if (powerPin >= 0) {
+      const auto pin = static_cast<gpio_num_t>(powerPin);
+      esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+      if (BoardConfig::ACTIVE.input.powerActiveHigh) {
+        rtc_gpio_pullup_dis(pin);
+        rtc_gpio_pulldown_en(pin);
+      } else {
+        rtc_gpio_pulldown_dis(pin);
+        rtc_gpio_pullup_en(pin);
+      }
+    }
+  }
+#else
+  (void)keepRtcPeriphOn;
+#endif
+
+  freeink::PowerManager::deepSleep();
 }
 
 bool HalPowerManager::lightSleep(const HalGPIO& gpio) const {
