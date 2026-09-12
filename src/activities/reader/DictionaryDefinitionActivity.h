@@ -7,29 +7,23 @@
 #include <string>
 #include <vector>
 
-#include "activities/Activity.h"
-#include "util/ButtonNavigator.h"
+#include "ReaderActivity.h"
 
 // Paged viewer for one dictionary definition. HTML definitions are laid out
 // through the EPUB chapter parser into styled Pages; anything else (plain
 // text, or HTML too damaged to parse) is word-wrapped once on entry and each
 // page renders spans of the original string, so no per-line copies are held.
-class DictionaryDefinitionActivity final : public Activity {
+class DictionaryDefinitionActivity final : public ReaderActivity {
  public:
   explicit DictionaryDefinitionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string headword,
                                         std::string definition, bool htmlDefinition = false)
-      : Activity("DictionaryDefinition", renderer, mappedInput),
+      : ReaderActivity("DictionaryDefinition", renderer, mappedInput, "", false),
         headword(std::move(headword)),
         definition(std::move(definition)),
         htmlDefinition(htmlDefinition) {}
 
   void onEnter() override;
-  void loop() override;
-  void render(RenderLock&&) override;
-  // Part of the reading flow (opened from the page mid-read), so it follows
-  // the reading surface's night-mode polarity like the word-select overlay.
-  bool appliesNightMode() const override { return true; }
-
+  void onExit() override;
  private:
   // One wrapped display line: a byte span of `definition`. Wrapping keeps
   // lines under the screen width, so uint16_t length is ample.
@@ -49,6 +43,14 @@ class DictionaryDefinitionActivity final : public Activity {
   void wrapText();
   int measureSpan(int fontId, const char* text, size_t len) const;
   void drawBody(int fontId, int x, int startY) const;
+  bool loadBook() override { return true; }
+  std::string getBookTitle() const override { return headword; }
+  bool handleBackNavigation() override;
+  bool handleReaderHomeBack() override;
+  bool pageTurn(bool isForward) override;
+  bool skipPages(int amount) override;
+  bool isAtEndOfBook() const override { return false; }
+  void renderBook() override;
 
   const std::string headword;
   // Not const: onEnter() normalizes embedded NULs (StarDict multi-type
@@ -62,5 +64,4 @@ class DictionaryDefinitionActivity final : public Activity {
   int currentPage = 0;
   int totalPages = 1;
   int linesPerPage = 1;
-  ButtonNavigator buttonNavigator;
 };

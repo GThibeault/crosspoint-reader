@@ -85,6 +85,11 @@ bool ReaderActivity::handleBackNavigation() {
                                            {this, [](void* ctx) { static_cast<ReaderActivity*>(ctx)->onGoHome(); }});
 }
 
+bool ReaderActivity::handleHomeGesture() {
+  if (SETTINGS.shortHomePress != CrossPointSettings::SHORT_HOME_PRESS::HOME_BACK) return false;
+  return handleReaderHomeBack();
+}
+
 void ReaderActivity::clearEndOfBookOptionsIfNeeded() {
   if (isAtEndOfBook() || !endOfBookOptionsReady.load(std::memory_order_acquire)) return;
 

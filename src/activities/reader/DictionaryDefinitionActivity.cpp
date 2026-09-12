@@ -9,6 +9,7 @@
 #include <cstdio>
 
 #include "CrossPointSettings.h"
+#include "ReaderUtils.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/DictHtmlPages.h"
@@ -33,6 +34,8 @@ constexpr size_t MAX_STYLED_HTML_BYTES = 16 * 1024;
 }  // namespace
 
 void DictionaryDefinitionActivity::onEnter() {
+  // This stacked reader surface must not run the underlying book's
+  // load/persistence path.
   Activity::onEnter();
   // Normalize StarDict multi-type separators so the wrap loop and the
   // C-string font APIs below both see the whole definition.
@@ -43,6 +46,8 @@ void DictionaryDefinitionActivity::onEnter() {
   }
   requestUpdate();
 }
+
+void DictionaryDefinitionActivity::onExit() { Activity::onExit(); }
 
 DictionaryDefinitionActivity::BodyArea DictionaryDefinitionActivity::bodyArea() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
@@ -190,42 +195,26 @@ void DictionaryDefinitionActivity::wrapText() {
   currentPage = 0;
 }
 
-void DictionaryDefinitionActivity::loop() {
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    finish();
-    return;
-  }
+bool DictionaryDefinitionActivity::handleBackNavigation() {
+  if (!mappedInput.wasReleased(MappedInputManager::Button::Back)) return false;
+  finish();
+  return true;
+}
 
-  // Same tap zones as the reader page turns: left third = previous page,
-  // the rest = next. Back is the usual left-edge swipe.
-  int tx = 0;
-  int ty = 0;
-  if (mappedInput.wasScreenTapped(tx, ty)) {
-    if (tx < renderer.getScreenWidth() / 3) {
-      if (currentPage > 0) {
-        currentPage--;
-        requestUpdate();
-      }
-    } else if (currentPage + 1 < totalPages) {
-      currentPage++;
-      requestUpdate();
-    }
-    return;
-  }
+bool DictionaryDefinitionActivity::handleReaderHomeBack() {
+  finish();
+  return true;
+}
 
-  buttonNavigator.onNext([this] {
-    if (currentPage + 1 < totalPages) {
-      currentPage++;
-      requestUpdate();
-    }
-  });
+bool DictionaryDefinitionActivity::pageTurn(const bool isForward) {
+  return skipPages(isForward ? 1 : -1);
+}
 
-  buttonNavigator.onPrevious([this] {
-    if (currentPage > 0) {
-      currentPage--;
-      requestUpdate();
-    }
-  });
+bool DictionaryDefinitionActivity::skipPages(const int amount) {
+  const int target = std::clamp(currentPage + amount, 0, totalPages - 1);
+  if (target == currentPage) return false;
+  currentPage = target;
+  return true;
 }
 
 // Draws the current page: a styled Page when the HTML layout succeeded,
@@ -250,7 +239,7 @@ void DictionaryDefinitionActivity::drawBody(const int fontId, const int x, const
   }
 }
 
-void DictionaryDefinitionActivity::render(RenderLock&&) {
+void DictionaryDefinitionActivity::renderBook() {
   renderer.clearScreen();
 
   const auto& metrics = UITheme::getInstance().getMetrics();
@@ -287,5 +276,5 @@ void DictionaryDefinitionActivity::render(RenderLock&&) {
   const auto labels =
       mappedInput.mapLabels(tr(STR_BACK), "", (currentPage > 0 ? "<" : ""), (currentPage + 1 < totalPages ? ">" : ""));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  renderer.displayBuffer();
+  ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
 }

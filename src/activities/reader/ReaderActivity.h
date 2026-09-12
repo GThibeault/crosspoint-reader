@@ -35,7 +35,8 @@ class ReaderActivity : public Activity {
   virtual void applyInitialOrientation();
   virtual void onEndOfBookRendered() {}
 
-  bool handleBackNavigation();
+  virtual bool handleBackNavigation();
+  virtual bool handleReaderHomeBack() { return false; }
   bool handleEndOfBookMenu(bool suppressConfirmRelease = false);
   bool handleEndOfBookPageTurn(bool prevTriggered, bool nextTriggered);
   void clearEndOfBookOptionsIfNeeded();
@@ -51,6 +52,7 @@ class ReaderActivity : public Activity {
   void onExit() override;
   void loop() override;
   void render(RenderLock&& lock) override;
+  bool handleHomeGesture() final;
 
   bool isReaderActivity() const final { return true; }
   bool appliesNightMode() const final { return true; }
