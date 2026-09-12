@@ -60,6 +60,51 @@ constexpr const char* LINETHROUGH_TAGS[] = {"del", "s", "strike"};
 constexpr const char* IMAGE_TAGS[] = {"img", "image"};
 bool isWhitespace(const char c) { return c == ' ' || c == '\r' || c == '\n' || c == '\t'; }
 
+int encodeUnicodeImageAlt(const char* alt, char utf8[5]) {
+  if (!alt || (alt[0] != 'U' && alt[0] != 'u') || alt[1] != '+') return 0;
+
+  uint32_t codepoint = 0;
+  uint8_t digitCount = 0;
+  for (const char* current = alt + 2; *current != '\0'; ++current) {
+    uint8_t digit = 0;
+    if (*current >= '0' && *current <= '9') {
+      digit = static_cast<uint8_t>(*current - '0');
+    } else if (*current >= 'A' && *current <= 'F') {
+      digit = static_cast<uint8_t>(*current - 'A' + 10);
+    } else if (*current >= 'a' && *current <= 'f') {
+      digit = static_cast<uint8_t>(*current - 'a' + 10);
+    } else {
+      return 0;
+    }
+    if (++digitCount > 6) return 0;
+    codepoint = (codepoint << 4) | digit;
+  }
+
+  if (digitCount == 0 || codepoint == 0 || codepoint > 0x10FFFF ||
+      (codepoint >= 0xD800 && codepoint <= 0xDFFF)) {
+    return 0;
+  }
+
+  int length = 0;
+  if (codepoint < 0x80) {
+    utf8[length++] = static_cast<char>(codepoint);
+  } else if (codepoint < 0x800) {
+    utf8[length++] = static_cast<char>(0xC0 | (codepoint >> 6));
+    utf8[length++] = static_cast<char>(0x80 | (codepoint & 0x3F));
+  } else if (codepoint < 0x10000) {
+    utf8[length++] = static_cast<char>(0xE0 | (codepoint >> 12));
+    utf8[length++] = static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+    utf8[length++] = static_cast<char>(0x80 | (codepoint & 0x3F));
+  } else {
+    utf8[length++] = static_cast<char>(0xF0 | (codepoint >> 18));
+    utf8[length++] = static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F));
+    utf8[length++] = static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+    utf8[length++] = static_cast<char>(0x80 | (codepoint & 0x3F));
+  }
+  utf8[length] = '\0';
+  return length;
+}
+
 std::string trimAndNormalize(const std::string& str) {
   if (str.empty()) return "";
   size_t start = 0;
@@ -925,6 +970,18 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
   }
 
   if (matches(name, IMAGE_TAGS, std::size(IMAGE_TAGS))) {
+    char inlineGlyph[5];
+    const int inlineGlyphLength = encodeUnicodeImageAlt(getAttribute(atts, "alt"), inlineGlyph);
+    if (inlineGlyphLength > 0) {
+      const bool wasSynthetic = self->syntheticCharacterData;
+      self->syntheticCharacterData = true;
+      self->characterData(userData, inlineGlyph, inlineGlyphLength);
+      self->syntheticCharacterData = wasSynthetic;
+      self->inlineGlyphImageDepth = self->depth;
+      self->depth += 1;
+      return;
+    }
+
     std::string src;
     std::string alt;
     if (atts != nullptr) {
@@ -1761,6 +1818,12 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
   auto* self = static_cast<ChapterHtmlSlimParser*>(userData);
   if (self->nonVisibleTextDepth > 0) {
     self->nonVisibleTextDepth--;
+  }
+
+  if (matches(name, IMAGE_TAGS, std::size(IMAGE_TAGS)) && self->inlineGlyphImageDepth == self->depth - 1) {
+    self->inlineGlyphImageDepth = INT_MAX;
+    self->depth -= 1;
+    return;
   }
 
   // Ruby text: </rt> distributes ruby to base words, </ruby> resets ruby state

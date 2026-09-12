@@ -4,6 +4,11 @@
 
 #include <algorithm>
 
+namespace {
+constexpr uint32_t MODIFIER_LETTER_LEFT_HALF_RING = 0x02BF;
+constexpr uint32_t LEFT_SINGLE_QUOTATION_MARK = 0x2018;
+}  // namespace
+
 void EpdFont::getTextBounds(const char* string, const int startX, const int startY, int* minX, int* minY, int* maxX,
                             int* maxY) const {
   *minX = startX;
@@ -233,6 +238,12 @@ const EpdGlyph* EpdFont::getGlyph(const uint32_t cp) const {
   if (data->glyphMissHandler) {
     const EpdGlyph* loaded = data->glyphMissHandler(data->glyphMissCtx, cp);
     if (loaded) return loaded;
+  }
+
+  // U+02BF is the standard transliteration mark for ayin. Compact built-in
+  // reader fonts omit it, so use the visually equivalent raised left quote.
+  if (cp == MODIFIER_LETTER_LEFT_HALF_RING) {
+    return getGlyph(LEFT_SINGLE_QUOTATION_MARK);
   }
 
   if (cp != REPLACEMENT_GLYPH) {

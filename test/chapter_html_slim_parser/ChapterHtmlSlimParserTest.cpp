@@ -116,4 +116,25 @@ TEST_F(ChapterHtmlSlimParserTest, DivWithHiddenAttributeContentShouldBeSkipped) 
   ASSERT_EQ(parser.partWordBufferIndex, 0);
 }
 
+TEST_F(ChapterHtmlSlimParserTest, UnicodeGlyphImagesRemainInlineWithSurroundingWord) {
+  const XML_Char* ayinAttributes[] = {"alt", "U+02BF", "src", "../Images/02BF.png", nullptr};
+  const XML_Char* macronAttributes[] = {"alt", "U+0101", "src", "../Images/0101.png", nullptr};
+
+  parser.beginParse();
+  ChapterHtmlSlimParser::startElement(&parser, "p", nullptr);
+  ChapterHtmlSlimParser::characterData(&parser, "from ", 5);
+  ChapterHtmlSlimParser::startElement(&parser, "img", ayinAttributes);
+  ChapterHtmlSlimParser::endElement(&parser, "img");
+  ChapterHtmlSlimParser::characterData(&parser, "el", 2);
+  ChapterHtmlSlimParser::startElement(&parser, "img", macronAttributes);
+  ChapterHtmlSlimParser::endElement(&parser, "img");
+  ChapterHtmlSlimParser::characterData(&parser, "m ", 2);
+
+  ASSERT_EQ(parser.currentTextBlock->size(), 2u);
+  EXPECT_EQ(parser.currentTextBlock->words[0], "from");
+  EXPECT_EQ(parser.currentTextBlock->words[1], "\xCA\xBF"
+                                                   "el\xC4\x81m");
+  EXPECT_EQ(parser.imageCounter, 0);
+}
+
 }  // namespace
